@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build and CMake
+build/
+cmake/
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Project specific
+recordings/
+*.log
+*.csv
+*.dat
+
+# OS specific
+.DS_Store
+Thumbs.db 
