@@ -32,7 +32,17 @@ CURSOR_CONFIG = {
 # Performance monitoring settings
 PERFORMANCE_CONFIG = {
     'reset_interval': 1.0,
-    'log_interval': 1.0
+    'log_interval': 1.0,
+    'log_dir': 'performance_logs',  # Directory for performance logs
+    'log_metrics': True,  # Enable/disable performance logging
+    'metrics_to_log': [  # List of metrics to log
+        'capture',
+        'process',
+        'detection',
+        'drawing',
+        'overlay',
+        'cursor'
+    ]
 }
 
 # Video recording settings
