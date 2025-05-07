@@ -184,41 +184,65 @@ class OverlayWindow:
                 self.save_dc.SelectObject(yellow_brush)
                 self.save_dc.Ellipse((point_x - 1, point_y - 1, point_x + 1, point_y + 1))
 
-    def draw_movement_vector(self, start_point, end_point, speed, direction):
-        if start_point is None or end_point is None:
-            return
-        start_x = int(start_point[0])
-        start_y = int(start_point[1])
-        end_x = int(end_point[0])
-        end_y = int(end_point[1])
-        # Основная линия стрелки (толще)
-        thick_pen = win32ui.CreatePen(win32con.PS_SOLID, 3, 0x0000FF)
-        self.save_dc.SelectObject(thick_pen)
-        self.save_dc.MoveTo((start_x, start_y))
-        self.save_dc.LineTo((end_x, end_y))
-        # Рисуем наконечник стрелки (залитый треугольник)
-        if speed >= 0.1:
-            arrow_length = 20
-            arrow_width = 12
-            angle = math.atan2(end_y - start_y, end_x - start_x)
-            # Вершина стрелки
-            tip_x = end_x
-            tip_y = end_y
-            # Основание стрелки
-            base_x = end_x - arrow_length * math.cos(angle)
-            base_y = end_y - arrow_length * math.sin(angle)
-            # Два боковых угла
-            left_x = base_x + (arrow_width / 2) * math.sin(angle)
-            left_y = base_y - (arrow_width / 2) * math.cos(angle)
-            right_x = base_x - (arrow_width / 2) * math.sin(angle)
-            right_y = base_y + (arrow_width / 2) * math.cos(angle)
-            # Создаем залитый треугольник (наконечник)
-            points = [(int(tip_x), int(tip_y)), (int(left_x), int(left_y)), (int(right_x), int(right_y))]
-            brush = win32ui.CreateBrush(win32con.BS_SOLID, 0x0000FF, 0)
-            old_brush = self.save_dc.SelectObject(brush)
-            self.save_dc.Polygon(points)
-            self.save_dc.SelectObject(old_brush)
-            brush.DeleteObject()
+    def draw_movement_vector(self, cursor_pos, target_pos, speed, direction):
+        """Рисует вектор движения с градиентом скорости"""
+        try:
+            if not cursor_pos or not target_pos or speed <= 0:
+                return
+                
+            # Создаем перо для рисования
+            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0x0000FF)  # Красный цвет, толщина 2
+            old_pen = self.save_dc.SelectObject(pen)
+            
+            try:
+                # Рисуем линию движения
+                start_x, start_y = cursor_pos
+                end_x, end_y = target_pos
+                
+                # Нормализуем вектор движения
+                dx = end_x - start_x
+                dy = end_y - start_y
+                length = (dx * dx + dy * dy) ** 0.5
+                
+                if length > 0:
+                    dx /= length
+                    dy /= length
+                    
+                    # Рисуем стрелку
+                    arrow_length = min(length, 50)  # Ограничиваем длину стрелки
+                    end_x = start_x + dx * arrow_length
+                    end_y = start_y + dy * arrow_length
+                    
+                    # Рисуем основную линию
+                    self.save_dc.MoveTo((int(start_x), int(start_y)))
+                    self.save_dc.LineTo((int(end_x), int(end_y)))
+                    
+                    # Рисуем наконечник стрелки
+                    arrow_size = 10
+                    angle = math.atan2(dy, dx)
+                    arrow_angle = math.pi / 6  # 30 градусов
+                    
+                    # Первая часть наконечника
+                    ax = end_x - arrow_size * math.cos(angle + arrow_angle)
+                    ay = end_y - arrow_size * math.sin(angle + arrow_angle)
+                    self.save_dc.MoveTo((int(end_x), int(end_y)))
+                    self.save_dc.LineTo((int(ax), int(ay)))
+                    
+                    # Вторая часть наконечника
+                    ax = end_x - arrow_size * math.cos(angle - arrow_angle)
+                    ay = end_y - arrow_size * math.sin(angle - arrow_angle)
+                    self.save_dc.MoveTo((int(end_x), int(end_y)))
+                    self.save_dc.LineTo((int(ax), int(ay)))
+            finally:
+                # Восстанавливаем старое перо
+                self.save_dc.SelectObject(old_pen)
+                try:
+                    pen.DeleteObject()
+                except:
+                    pass  # Игнорируем ошибку удаления пера
+                
+        except Exception as e:
+            print(f"Error in draw_movement_vector: {str(e)}")
 
     def draw_bounding_box(self, box, color):
         if not box:
@@ -400,73 +424,36 @@ class OverlayWindow:
 
 class CursorController:
     def __init__(self):
-        self.last_position = None
-        self.smoothing_factor = 0.3  # Фактор сглаживания (0-1)
-        self.min_distance = 5  # Минимальное расстояние для движения
-        self.max_speed = 20  # Максимальная скорость движения в пикселях за кадр
-        self.fov = 100  # Угол обзора камеры в градусах
-        self.reference_height = 1.8  # Примерная высота человека в метрах
-        self.position_history = deque(maxlen=10)  # История позиций для расчета скорости
-        self.last_update_time = time.time()
-        self.speed_threshold = 0.2  # Минимальная скорость для определения движения (м/с)
-        self.movement_threshold = 15  # Минимальное перемещение в пикселях
-        self.temporal_filter_size = 5  # Размер окна для временной фильтрации
-        self.speed_history = deque([0.0] * self.temporal_filter_size, maxlen=self.temporal_filter_size)
-        self.relative_mode = False  # Режим относительного движения для 3D игр
-        self.sensitivity = 0.35  # Увеличенная чувствительность для относительного движения
+        self.relative_mode = False
+        self.sensitivity = 0.15  # Сильно уменьшенная чувствительность
         self.center_x = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN) // 2
         self.center_y = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN) // 2
-        self.last_mode_switch_time = 0  # Время последнего переключения режима
+        self.last_mode_switch_time = 0
+        self.last_position = None
         
-        # Параметры для плавного движения в relative режиме
-        self.relative_velocity = [0.0, 0.0]  # Текущая скорость
-        self.relative_acceleration = 0.8  # Ускорение
-        self.relative_deceleration = 0.95  # Замедление
-        self.relative_max_velocity = 40.0  # Максимальная скорость
-        self.relative_smoothing = 0.15  # Сглаживание движения
-        self.relative_history = deque(maxlen=5)  # История движений для сглаживания
+        # Параметры для абсолютного режима
+        self.smoothing_factor = 0.3
+        self.min_distance = 5
+        self.max_speed = 20
+        
+        # Параметры для сглаживания в относительном режиме
+        self.move_history = deque(maxlen=3)  # История последних движений
+        self.max_move = 30  # Максимальное смещение за один кадр
 
-    def apply_relative_movement(self, dx, dy, dt):
-        """Применяет плавное движение с ускорением для relative режима"""
-        try:
-            # Вычисляем целевую скорость на основе смещения
-            target_speed = min(math.sqrt(dx*dx + dy*dy), self.relative_max_velocity)
+    def toggle_mode(self):
+        """Toggle between absolute and relative mouse movement modes"""
+        current_time = time.time()
+        if current_time - self.last_mode_switch_time >= 0.5:  # Предотвращаем частое переключение
+            self.relative_mode = not self.relative_mode
+            self.last_mode_switch_time = current_time
+            print(f"Switched to {'RELATIVE' if self.relative_mode else 'ABSOLUTE'} mode")
             
-            if target_speed > 0:
-                # Нормализуем направление
-                target_dx = (dx / target_speed) * target_speed
-                target_dy = (dy / target_speed) * target_speed
-                
-                # Плавно изменяем текущую скорость
-                for i, (current, target) in enumerate(zip(self.relative_velocity, [target_dx, target_dy])):
-                    if abs(target) > abs(current):
-                        # Ускорение
-                        self.relative_velocity[i] += self.relative_acceleration * dt * (1.0 if target > 0 else -1.0)
-                    else:
-                        # Замедление
-                        self.relative_velocity[i] *= self.relative_deceleration
-                
-                # Добавляем текущее движение в историю
-                self.relative_history.append((self.relative_velocity[0], self.relative_velocity[1]))
-                
-                # Вычисляем сглаженное движение
-                smoothed_dx = sum(x for x, _ in self.relative_history) / len(self.relative_history)
-                smoothed_dy = sum(y for _, y in self.relative_history) / len(self.relative_history)
-                
-                # Применяем чувствительность и сглаживание
-                move_x = int(smoothed_dx * self.sensitivity * self.relative_smoothing)
-                move_y = int(smoothed_dy * self.sensitivity * self.relative_smoothing)
-                
-                return move_x, move_y
-            else:
-                # Сбрасываем скорость при отсутствии движения
-                self.relative_velocity = [0.0, 0.0]
-                self.relative_history.clear()
-                return 0, 0
-                
-        except Exception as e:
-            print(f"Error in apply_relative_movement: {str(e)}")
-            return 0, 0
+            if self.relative_mode:
+                # Центрируем курсор при переходе в относительный режим
+                win32api.SetCursorPos((self.center_x, self.center_y))
+                self.last_position = (self.center_x, self.center_y)
+            return True
+        return False
 
     def move_cursor(self, target_x, target_y):
         try:
@@ -475,16 +462,31 @@ class CursorController:
                 dx = target_x - self.center_x
                 dy = target_y - self.center_y
                 
-                # Вычисляем время с последнего обновления
-                current_time = time.time()
-                dt = current_time - self.last_update_time
-                self.last_update_time = current_time
+                # Применяем чувствительность
+                move_x = dx * self.sensitivity
+                move_y = dy * self.sensitivity
                 
-                # Применяем плавное движение с ускорением
-                move_x, move_y = self.apply_relative_movement(dx, dy, dt)
+                # Ограничиваем максимальное смещение за кадр
+                move_x = max(min(move_x, self.max_move), -self.max_move)
+                move_y = max(min(move_y, self.max_move), -self.max_move)
                 
-                # Используем относительное движение мыши
-                self.emulate_mouse_move(move_x, move_y)
+                # Добавляем текущее движение в историю
+                self.move_history.append((move_x, move_y))
+                
+                # Вычисляем сглаженное движение как среднее по истории
+                if len(self.move_history) > 0:
+                    smooth_x = sum(x for x, _ in self.move_history) / len(self.move_history)
+                    smooth_y = sum(y for _, y in self.move_history) / len(self.move_history)
+                    
+                    # Применяем сглаженное движение только если оно достаточно большое
+                    if abs(smooth_x) > 0.1 or abs(smooth_y) > 0.1:
+                        win32api.mouse_event(
+                            win32con.MOUSEEVENTF_MOVE,
+                            int(smooth_x),
+                            int(smooth_y),
+                            0, 0
+                        )
+                
                 return self.center_x, self.center_y
             else:
                 # Стандартный режим абсолютного позиционирования
@@ -514,10 +516,11 @@ class CursorController:
                 
         except Exception as e:
             print(f"Error in move_cursor: {str(e)}")
+            current_x, current_y = win32api.GetCursorPos()
             return current_x, current_y
 
     def calculate_3d_position(self, landmarks, frame_width, frame_height):
-        """Вычисляет 3D позицию цели относительно камеры"""
+        """Вычисляет позицию цели на основе ключевых точек"""
         if not landmarks:
             return None, None, None, 0.0, 0.0
             
@@ -534,73 +537,26 @@ class CursorController:
             pixel_x = int(center_x * frame_width)
             pixel_y = int(center_y * frame_height)
             
-            # Находим границы бокса для оценки расстояния
-            min_x = min_y = float('inf')
-            max_x = max_y = float('-inf')
-            
+            # Простой расчет расстояния на основе размера скелета
+            min_y = float('inf')
+            max_y = float('-inf')
             for landmark in landmarks.landmark:
-                x = int(landmark.x * frame_width)
-                y = int(landmark.y * frame_height)
-                min_x = min(min_x, x)
+                y = landmark.y * frame_height
                 min_y = min(min_y, y)
-                max_x = max(max_x, x)
                 max_y = max(max_y, y)
             
-            # Вычисляем высоту рамки в пикселях
-            box_height = max_y - min_y
-                
-            # Вычисляем расстояние с учетом FOV
-            fov_rad = math.radians(self.fov / 2)
-            distance = (self.reference_height * frame_height) / (2 * box_height * math.tan(fov_rad))
+            height_pixels = max_y - min_y
+            distance = 1000 / height_pixels if height_pixels > 0 else 0
             
-            # Ограничиваем расстояние разумными пределами
-            distance = min(max(distance, 0.5), 50.0)
-            
-            # Вычисляем скорость и направление движения
-            current_time = time.time()
-            dt = current_time - self.last_update_time
-            self.last_update_time = current_time
-            
-            # Добавляем текущую позицию в историю
-            self.position_history.append((pixel_x, pixel_y, current_time))
-            
-            # Вычисляем скорость только если есть достаточно точек в истории
-            speed = 0.0
-            direction = 0.0
-            
-            if len(self.position_history) >= 2:
-                # Берем первую и последнюю точку из истории
-                start_x, start_y, start_time = self.position_history[0]
-                end_x, end_y, end_time = self.position_history[-1]
-                
-                # Вычисляем общее перемещение
-                dx = end_x - start_x
-                dy = end_y - start_y
-                total_distance = (dx**2 + dy**2)**0.5
-                
-                # Вычисляем общее время
-                total_time = end_time - start_time
-                
-                # Вычисляем скорость только если перемещение значительное
-                if total_distance > self.movement_threshold and total_time > 0.1:
-                    # Конвертируем скорость из пикселей в секунду в метры в секунду
-                    raw_speed = (total_distance / total_time) * (distance / frame_height)
-                    
-                    # Добавляем новую скорость в историю
-                    self.speed_history.append(raw_speed)
-                    
-                    # Применяем медианную фильтрацию для устранения выбросов
-                    filtered_speed = sorted(self.speed_history)[len(self.speed_history) // 2]
-                    
-                    # Применяем порог скорости
-                    if filtered_speed >= self.speed_threshold:
-                        speed = filtered_speed
-                        direction = math.atan2(dy, dx)
-                    else:
-                        speed = 0.0
-                        direction = 0.0
-                else:
-                    self.speed_history.append(0.0)
+            # Простой расчет скорости
+            if self.last_position:
+                dx = pixel_x - self.last_position[0]
+                dy = pixel_y - self.last_position[1]
+                speed = (dx * dx + dy * dy) ** 0.5 / 100  # Нормализуем скорость
+                direction = math.atan2(dy, dx)
+            else:
+                speed = 0.0
+                direction = 0.0
             
             self.last_position = (pixel_x, pixel_y)
             
@@ -609,11 +565,6 @@ class CursorController:
         except Exception as e:
             print(f"Error in calculate_3d_position: {str(e)}")
             return None, None, None, 0.0, 0.0
-        
-    def emulate_mouse_move(self, dx, dy, sensitivity=None):
-        if sensitivity is None:
-            sensitivity = self.sensitivity
-        win32api.mouse_event(win32con.MOUSEEVENTF_MOVE, int(dx * sensitivity), int(dy * sensitivity), 0, 0)
 
 class VideoRecorder:
     def __init__(self):
@@ -1073,8 +1024,8 @@ def main():
                     else:
                         recorder.stop_recording()
                 elif keyboard.is_pressed('-'):
-                    cursor_controller.toggle_mode()
-                    time.sleep(0.3)  # Задержка для предотвращения множественных переключений
+                    if cursor_controller.toggle_mode():
+                        time.sleep(0.1)  # Короткая задержка только при успешном переключении
                 
                 perf_monitor.start('capture')
                 # Захват экрана
