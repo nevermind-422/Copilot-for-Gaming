@@ -153,10 +153,10 @@ class OverlayWindow:
         )
         
         # Добавляем параметры для прицела
-        self.crosshair_size = 20
+        self.crosshair_size = 15
         self.crosshair_thickness = 2
-        self.crosshair_color = 0x00FF00  # Зеленый
-        self.crosshair_relative_color = 0x0000FF  # Красный для относительного режима
+        self.crosshair_color = 0x00FF00  # Зеленый цвет для абсолютного режима
+        self.crosshair_relative_color = 0x00FFFF  # Голубой цвет для относительного режима
 
     def draw_skeleton(self, landmarks, color):
         """Рисует скелет с помощью линий и точек"""
@@ -327,6 +327,33 @@ class OverlayWindow:
                     center_x + self.crosshair_size,
                     center_y + self.crosshair_size
                 ))
+                
+                # Добавляем точки на концах линий
+                dot_size = 4
+                self.save_dc.Ellipse((
+                    center_x - self.crosshair_size - dot_size,
+                    center_y - dot_size,
+                    center_x - self.crosshair_size + dot_size,
+                    center_y + dot_size
+                ))
+                self.save_dc.Ellipse((
+                    center_x + self.crosshair_size - dot_size,
+                    center_y - dot_size,
+                    center_x + self.crosshair_size + dot_size,
+                    center_y + dot_size
+                ))
+                self.save_dc.Ellipse((
+                    center_x - dot_size,
+                    center_y - self.crosshair_size - dot_size,
+                    center_x + dot_size,
+                    center_y - self.crosshair_size + dot_size
+                ))
+                self.save_dc.Ellipse((
+                    center_x - dot_size,
+                    center_y + self.crosshair_size - dot_size,
+                    center_x + dot_size,
+                    center_y + self.crosshair_size + dot_size
+                ))
             
         except Exception as e:
             print(f"Error drawing crosshair: {str(e)}")
@@ -415,17 +442,29 @@ class OverlayWindow:
             traceback.print_exc()
 
     def __del__(self):
-        # Освобождаем ресурсы
-        win32gui.DeleteObject(self.bitmap.GetHandle())
-        self.save_dc.DeleteDC()
-        self.mfc_dc.DeleteDC()
-        win32gui.ReleaseDC(self.hwnd, self.hdc)
-        win32gui.DestroyWindow(self.hwnd)
+        try:
+            # Освобождаем ресурсы в правильном порядке
+            if hasattr(self, 'save_dc'):
+                self.save_dc.DeleteDC()
+            if hasattr(self, 'mfc_dc'):
+                self.mfc_dc.DeleteDC()
+            if hasattr(self, 'hdc'):
+                win32gui.ReleaseDC(self.hwnd, self.hdc)
+            if hasattr(self, 'bitmap'):
+                try:
+                    win32gui.DeleteObject(self.bitmap.GetHandle())
+                except:
+                    pass  # Игнорируем ошибку удаления битмапа
+            if hasattr(self, 'hwnd'):
+                win32gui.DestroyWindow(self.hwnd)
+        except Exception as e:
+            print(f"Error in OverlayWindow cleanup: {str(e)}")
+            pass  # Игнорируем ошибки при очистке
 
 class CursorController:
     def __init__(self):
         self.relative_mode = False
-        self.sensitivity = 0.15  # Сильно уменьшенная чувствительность
+        self.sensitivity = 0.075  # Уменьшена чувствительность в два раза (было 0.15)
         self.center_x = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN) // 2
         self.center_y = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN) // 2
         self.last_mode_switch_time = 0
@@ -438,7 +477,7 @@ class CursorController:
         
         # Параметры для сглаживания в относительном режиме
         self.move_history = deque(maxlen=3)  # История последних движений
-        self.max_move = 30  # Максимальное смещение за один кадр
+        self.max_move = 15  # Уменьшено максимальное смещение за один кадр (было 30)
 
     def toggle_mode(self):
         """Toggle between absolute and relative mouse movement modes"""
