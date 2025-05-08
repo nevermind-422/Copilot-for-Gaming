@@ -476,6 +476,45 @@ class CursorController:
         # Параметры для сглаживания в относительном режиме
         self.move_history = deque(maxlen=3)  # История последних движений
         self.max_move = 15  # Уменьшено максимальное смещение за один кадр (было 30)
+        
+        # Параметры для автоматического движения
+        self.is_moving = False
+        self.target_distance = 2.0  # Целевая дистанция в метрах
+        self.movement_threshold = 0.1  # Порог для начала движения
+
+    def is_crosshair_in_box(self, box):
+        """Проверяет, находится ли прицел внутри рамки"""
+        if not box:
+            return False
+        min_x, min_y, max_x, max_y = box
+        return (min_x <= self.center_x <= max_x and 
+                min_y <= self.center_y <= max_y)
+
+    def handle_auto_movement(self, distance, box):
+        """Управляет автоматическим движением к цели"""
+        if not box:
+            if self.is_moving:
+                keyboard.release('w')
+                self.is_moving = False
+            return
+
+        # Проверяем, находится ли прицел в рамке
+        if self.is_crosshair_in_box(box):
+            if distance > self.target_distance + self.movement_threshold:
+                # Если дистанция больше целевой, начинаем движение
+                if not self.is_moving:
+                    keyboard.press('w')
+                    self.is_moving = True
+            elif distance < self.target_distance - self.movement_threshold:
+                # Если дистанция меньше целевой, останавливаемся
+                if self.is_moving:
+                    keyboard.release('w')
+                    self.is_moving = False
+        else:
+            # Если прицел не в рамке, останавливаемся
+            if self.is_moving:
+                keyboard.release('w')
+                self.is_moving = False
 
     def toggle_mode(self):
         """Toggle between absolute and relative mouse movement modes"""
@@ -604,6 +643,11 @@ class CursorController:
         except Exception as e:
             print(f"Error in calculate_3d_position: {str(e)}")
             return None, None, None, 0.0, 0.0
+
+    def __del__(self):
+        """Очистка при завершении работы"""
+        if self.is_moving:
+            keyboard.release('w')
 
 class VideoRecorder:
     def __init__(self):
@@ -934,12 +978,6 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
         results = holistic.process(rgb_frame)
         perf_monitor.stop('detection')
         
-        # Добавляем отладочную информацию
-        if results.pose_landmarks:
-            print("MediaPipe detected pose landmarks")
-        else:
-            print("No pose landmarks detected")
-        
         # Список для хранения всех найденных объектов
         detected_objects = []
         target_x, target_y, target_distance, speed, direction = None, None, None, 0.0, 0.0
@@ -967,7 +1005,15 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                         2
                     )
                 })
-                print(f"Added body object with target position: ({target_x}, {target_y})")
+                
+                # Управляем автоматическим движением
+                cursor_controller.handle_auto_movement(target_distance, DrawingUtils.draw_bounding_box(
+                    frame,
+                    results.pose_landmarks,
+                    (0, 255, 0),
+                    20,
+                    2
+                ))
                 
             except Exception as e:
                 print(f"Error processing pose landmarks: {str(e)}")
