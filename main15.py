@@ -647,6 +647,48 @@ class CursorController:
         self.mouse1_interval = random.uniform(0.5, 0.7)  # Интервал для Mouse1
         self.last_box = None  # Последняя известная рамка
         self.last_distance = None  # Последнее известное расстояние
+        
+        # История позиций запястий для проверки стабильности
+        self.wrist_positions = deque(maxlen=10)  # Храним последние 10 позиций
+        self.stability_threshold = 0.02  # Порог стабильности (можно настроить)
+
+    def check_stability(self, left_wrist, right_wrist):
+        """Проверяет стабильность положения запястий"""
+        if not left_wrist or not right_wrist:
+            return True  # Если нет данных, считаем стабильным
+            
+        # Вычисляем среднюю позицию запястий
+        current_pos = (
+            (left_wrist.x + right_wrist.x) / 2,
+            (left_wrist.y + right_wrist.y) / 2,
+            (left_wrist.z + right_wrist.z) / 2
+        )
+        
+        # Добавляем текущую позицию в историю
+        self.wrist_positions.append(current_pos)
+        
+        # Если у нас недостаточно истории, считаем стабильным
+        if len(self.wrist_positions) < 3:
+            return True
+            
+        # Вычисляем среднее отклонение от среднего положения
+        avg_x = sum(p[0] for p in self.wrist_positions) / len(self.wrist_positions)
+        avg_y = sum(p[1] for p in self.wrist_positions) / len(self.wrist_positions)
+        avg_z = sum(p[2] for p in self.wrist_positions) / len(self.wrist_positions)
+        
+        # Вычисляем среднее отклонение
+        deviations = []
+        for pos in self.wrist_positions:
+            dx = abs(pos[0] - avg_x)
+            dy = abs(pos[1] - avg_y)
+            dz = abs(pos[2] - avg_z)
+            deviation = (dx + dy + dz) / 3  # Среднее отклонение по всем координатам
+            deviations.append(deviation)
+            
+        avg_deviation = sum(deviations) / len(deviations)
+        
+        # Если среднее отклонение меньше порога, считаем положение стабильным
+        return avg_deviation < self.stability_threshold
 
     def is_crosshair_in_box(self, box):
         """Проверяет, находится ли прицел внутри рамки"""
@@ -1209,15 +1251,8 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
         # Обрабатываем результаты распознавания
         if results.pose_landmarks:
             try:
-                # Получаем 3D позицию цели
-                target_x, target_y, target_distance, speed, direction = cursor_controller.calculate_3d_position(
-                    results.pose_landmarks,
-                    screen_width,
-                    screen_height
-                )
-                
-                # Создаем рамку для объекта
-                box = DrawingUtils.draw_bounding_box(
+                # Создаем временную рамку для проверки размера
+                temp_box = DrawingUtils.draw_bounding_box(
                     frame,
                     results.pose_landmarks,
                     (0, 255, 0),
@@ -1225,70 +1260,85 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                     2
                 )
                 
-                # Сохраняем рамку в контроллере
-                cursor_controller.last_box = box
+                if temp_box:
+                    # Проверяем размер области
+                    min_x, min_y, max_x, max_y = temp_box
+                    width = max_x - min_x
+                    height = max_y - min_y
+                    area = width * height
+                    
+                    # Проверяем положение области
+                    center_y = (min_y + max_y) / 2
+                    center_x = (min_x + max_x) / 2
+                    
+                    # Проверяем, находится ли центр области в нижней трети экрана
+                    is_in_lower_third = center_y > (screen_height * 2/3)
+                    
+                    # Проверяем, находится ли центр области в центральной трети по горизонтали
+                    is_in_center_third = (screen_width/3) <= center_x <= (screen_width * 2/3)
+                    
+                    # Проверяем глубину (z-координату) ключевых точек
+                    left_wrist = results.pose_landmarks.landmark[mp_holistic.PoseLandmark.LEFT_WRIST]
+                    right_wrist = results.pose_landmarks.landmark[mp_holistic.PoseLandmark.RIGHT_WRIST]
+                    left_shoulder = results.pose_landmarks.landmark[mp_holistic.PoseLandmark.LEFT_SHOULDER]
+                    right_shoulder = results.pose_landmarks.landmark[mp_holistic.PoseLandmark.RIGHT_SHOULDER]
+                    
+                    # Вычисляем среднюю z-координату запястий и плеч
+                    wrist_z = (left_wrist.z + right_wrist.z) / 2
+                    shoulder_z = (left_shoulder.z + right_shoulder.z) / 2
+                    
+                    # Если запястья находятся ближе к камере, чем плечи, это могут быть руки
+                    # z-координата в MediaPipe: меньше = ближе к камере
+                    is_hands_closer = wrist_z < shoulder_z - 0.1  # Порог 0.1 можно настроить
+                    
+                    # Проверяем стабильность положения
+                    is_stable = cursor_controller.check_stability(left_wrist, right_wrist)
+                    
+                    # Игнорируем обнаружение, если:
+                    # 1. Область находится в нижней трети экрана И
+                    # 2. Область находится в центральной трети по горизонтали И
+                    # 3. (Запястья находятся ближе к камере, чем плечи ИЛИ положение нестабильно)
+                    should_ignore = is_in_lower_third and is_in_center_third and (is_hands_closer or not is_stable)
+                    
+                    # Минимальный размер области для детекции
+                    MIN_DETECTION_AREA = 50000
+                    
+                    if not should_ignore and area >= MIN_DETECTION_AREA:
+                        # Получаем 3D позицию цели
+                        target_x, target_y, target_distance, speed, direction = cursor_controller.calculate_3d_position(
+                            results.pose_landmarks,
+                            screen_width,
+                            screen_height
+                        )
+                        
+                        # Сохраняем рамку в контроллере
+                        cursor_controller.last_box = temp_box
+                        
+                        # Добавляем тело в список объектов
+                        detected_objects.append({
+                            'type': 'body',
+                            'landmarks': results.pose_landmarks,
+                            'color': (0, 255, 0),
+                            'box': temp_box
+                        })
+                        
+                        # Управляем автоматическим движением
+                        cursor_controller.handle_auto_movement(target_distance, temp_box)
+                    else:
+                        # Если область должна быть проигнорирована, сбрасываем рамку
+                        cursor_controller.last_box = None
                 
-                # Добавляем тело в список объектов
-                detected_objects.append({
-                    'type': 'body',
-                    'landmarks': results.pose_landmarks,
-                    'color': (0, 255, 0),
-                    'box': box
-                })
-                
-                # Управляем автоматическим движением
-                cursor_controller.handle_auto_movement(target_distance, box)
-                
+                # Перемещаем курсор к цели
+                if target_x is not None and target_y is not None:
+                    perf_monitor.start('cursor')
+                    cursor_x, cursor_y = cursor_controller.move_cursor(target_x, target_y)
+                    perf_monitor.stop('cursor')
+                    
             except Exception as e:
                 print(f"Error processing pose landmarks: {str(e)}")
         else:
             # Если объект не обнаружен, сбрасываем рамку
             cursor_controller.last_box = None
-        
-        # Перемещаем курсор к цели
-        if target_x is not None and target_y is not None:
-            perf_monitor.start('cursor')
-            cursor_x, cursor_y = cursor_controller.move_cursor(target_x, target_y)
-            perf_monitor.stop('cursor')
-            
-            # Рисуем только необходимые элементы
-            perf_monitor.start('drawing')
-            # Рисуем рамку вокруг тела
-            if detected_objects and detected_objects[0]['box']:
-                min_x, min_y, max_x, max_y = detected_objects[0]['box']
-                cv2.rectangle(frame, (min_x, min_y), (max_x, max_y), (0, 255, 0), 2)
-                
-                # Рисуем центр объекта
-                center_x = (min_x + max_x) // 2
-                center_y = (min_y + max_y) // 2
-                cv2.circle(frame, (center_x, center_y), 5, (0, 255, 255), -1)
-            
-            # Рисуем курсор
-            cv2.circle(frame, (cursor_x, cursor_y), 5, (0, 0, 255), -1)
-            
-            # Рисуем вектор движения
-            if cursor_controller.last_position is not None:
-                dx = target_x - cursor_controller.last_position[0]
-                dy = target_y - cursor_controller.last_position[1]
-                movement = (dx**2 + dy**2)**0.5
-                
-                if movement > 10:
-                    cv2.arrowedLine(
-                        frame,
-                        cursor_controller.last_position,
-                        (target_x, target_y),
-                        (0, 255, 0),
-                        2,
-                        tipLength=0.2
-                    )
-            perf_monitor.stop('drawing')
-        
-        # Показываем результат в отдельном окне
-        try:
-            cv2.imshow('Debug View', frame)
-            cv2.waitKey(1)  # Важно для обработки событий OpenCV
-        except Exception as e:
-            print(f"Error showing debug window: {str(e)}")
         
         perf_monitor.stop('process')
         return target_x, target_y, target_distance, speed, direction, detected_objects
