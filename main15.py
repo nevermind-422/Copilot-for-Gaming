@@ -155,6 +155,10 @@ class OverlayWindow:
         
         # Флаг для отрисовки скелета
         self.draw_skeleton_enabled = False
+        
+        # Цвета для индикации состояния
+        self.following_color = 0x00FF00  # Зеленый для активного состояния
+        self.following_disabled_color = 0xFF0000  # Красный для неактивного состояния
 
     def draw_skeleton(self, landmarks, color):
         """Рисует скелет с помощью линий и точек"""
@@ -356,6 +360,156 @@ class OverlayWindow:
         except Exception as e:
             print(f"Error drawing crosshair: {str(e)}")
 
+    def draw_following_status(self, cursor_controller):
+        """Рисует индикатор состояния следования в виде кнопки"""
+        try:
+            # Позиция и размеры кнопки
+            button_width = 120
+            button_height = 40
+            button_x = 570  # 100 + 450 (ширина блока таймеров) + 20 (отступ)
+            button_y = 60   # Выравниваем по верхнему краю блока таймеров
+            
+            # Цвета
+            bg_color = 0x00FF00 if cursor_controller.following_enabled else 0xFF0000  # Зеленый или красный
+            text_color = 0xFFFFFF  # Белый текст
+            
+            # Рисуем фон кнопки
+            brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
+            self.save_dc.SelectObject(brush)
+            self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
+            
+            # Рисуем рамку кнопки
+            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0xFFFFFF)  # Белая рамка
+            self.save_dc.SelectObject(pen)
+            self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
+            
+            # Рисуем текст
+            self.save_dc.SetTextColor(text_color)
+            status = "FOLLOWING: ON" if cursor_controller.following_enabled else "FOLLOWING: OFF"
+            
+            # Центрируем текст
+            text_width = self.save_dc.GetTextExtent(status)[0]
+            text_x = button_x + (button_width - text_width) // 2
+            text_y = button_y + (button_height - 20) // 2
+            
+            self.save_dc.TextOut(text_x, text_y, status)
+            
+            # Добавляем подсказку с хоткеем
+            hotkey_text = "+ :"
+            hotkey_width = self.save_dc.GetTextExtent(hotkey_text)[0]
+            hotkey_x = button_x - hotkey_width - 5  # 5 пикселей отступа от кнопки
+            self.save_dc.SetTextColor(0x00FF00)  # Зеленый цвет для подсказки
+            self.save_dc.TextOut(hotkey_x, button_y + (button_height - 20) // 2, hotkey_text)
+            
+            # Очищаем ресурсы
+            try:
+                brush.DeleteObject()
+            except:
+                pass
+            
+        except Exception as e:
+            print(f"Error drawing following status: {str(e)}")
+
+    def draw_mode_status(self, cursor_controller):
+        """Рисует индикатор режима мыши в виде кнопки"""
+        try:
+            # Позиция и размеры кнопки
+            button_width = 120
+            button_height = 40
+            button_x = 570  # Та же x-координата, что и у кнопки following
+            button_y = 110  # Располагаем под кнопкой following
+            
+            # Цвета
+            bg_color = 0x00FFFF if cursor_controller.relative_mode else 0x00FF00  # Голубой для относительного, зеленый для абсолютного
+            text_color = 0xFFFFFF  # Белый текст
+            
+            # Рисуем фон кнопки
+            brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
+            self.save_dc.SelectObject(brush)
+            self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
+            
+            # Рисуем рамку кнопки
+            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0xFFFFFF)  # Белая рамка
+            self.save_dc.SelectObject(pen)
+            self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
+            
+            # Рисуем текст
+            self.save_dc.SetTextColor(text_color)
+            status = "MODE: RELATIVE" if cursor_controller.relative_mode else "MODE: ABSOLUTE"
+            
+            # Центрируем текст
+            text_width = self.save_dc.GetTextExtent(status)[0]
+            text_x = button_x + (button_width - text_width) // 2
+            text_y = button_y + (button_height - 20) // 2
+            
+            self.save_dc.TextOut(text_x, text_y, status)
+            
+            # Добавляем подсказку с хоткеем
+            hotkey_text = "- :"
+            hotkey_width = self.save_dc.GetTextExtent(hotkey_text)[0]
+            hotkey_x = button_x - hotkey_width - 5  # 5 пикселей отступа от кнопки
+            self.save_dc.SetTextColor(0x00FF00)  # Зеленый цвет для подсказки
+            self.save_dc.TextOut(hotkey_x, button_y + (button_height - 20) // 2, hotkey_text)
+            
+            # Очищаем ресурсы
+            try:
+                brush.DeleteObject()
+            except:
+                pass
+            
+        except Exception as e:
+            print(f"Error drawing mode status: {str(e)}")
+
+    def draw_attack_status(self, cursor_controller):
+        """Рисует индикатор режима атаки в виде кнопки"""
+        try:
+            # Позиция и размеры кнопки
+            button_width = 120
+            button_height = 40
+            button_x = 570  # Та же x-координата, что и у других кнопок
+            button_y = 160  # Располагаем под кнопкой режима
+            
+            # Цвета
+            bg_color = 0xFF0000 if cursor_controller.attack_enabled else 0x404040  # Красный для активного, серый для неактивного
+            text_color = 0xFFFFFF  # Белый текст
+            
+            # Рисуем фон кнопки
+            brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
+            self.save_dc.SelectObject(brush)
+            self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
+            
+            # Рисуем рамку кнопки
+            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0xFFFFFF)  # Белая рамка
+            self.save_dc.SelectObject(pen)
+            self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
+            
+            # Рисуем текст
+            self.save_dc.SetTextColor(text_color)
+            status = "ATTACKING: ON" if cursor_controller.attack_enabled else "ATTACKING: OFF"
+            
+            # Центрируем текст
+            text_width = self.save_dc.GetTextExtent(status)[0]
+            text_x = button_x + (button_width - text_width) // 2
+            text_y = button_y + (button_height - 20) // 2
+            
+            self.save_dc.TextOut(text_x, text_y, status)
+            
+            # Добавляем подсказку с хоткеем
+            hotkey_text = "BS :"
+            hotkey_width = self.save_dc.GetTextExtent(hotkey_text)[0]
+            hotkey_x = button_x - hotkey_width - 5  # 5 пикселей отступа от кнопки
+            self.save_dc.SetTextColor(0x00FF00)  # Зеленый цвет для подсказки
+            self.save_dc.TextOut(hotkey_x, button_y + (button_height - 20) // 2, hotkey_text)
+            
+            # Очищаем ресурсы
+            try:
+                brush.DeleteObject()
+            except:
+                pass
+            
+        except Exception as e:
+            print(f"Error drawing attack status: {str(e)}")
+
     def update_info(self, cursor_pos, target_pos, distance, movement, detected_objects=None, fps=0, perf_stats=None, speed=0, direction=0, cursor_controller=None):
         current_time = time.time()
         if current_time - self.last_update_time < self.update_interval:
@@ -366,6 +520,10 @@ class OverlayWindow:
             
             if cursor_controller:
                 self.draw_crosshair(cursor_controller)
+                self.draw_following_status(cursor_controller)
+                self.draw_mode_status(cursor_controller)
+                self.draw_attack_status(cursor_controller)
+                cursor_controller.handle_attack()  # Обработка атак
             
             if detected_objects:
                 for obj in detected_objects:
@@ -381,21 +539,19 @@ class OverlayWindow:
             self.save_dc.SelectObject(self.font)
             
             # Серый фон для всей отладочной информации
-            self.save_dc.FillSolidRect((100, 60, 450, 490), 0x404040)
+            self.save_dc.FillSolidRect((100, 60, 450, 520), 0x404040)  # Увеличена высота на 30 пикселей
             
             # FPS, Distance, Speed, Movement Angle
             fps_str = f"FPS: {fps:.1f}"
             distance_str = f"Distance: {distance:.2f}m" if distance is not None else "Distance: ---"
             speed_str = f"Speed: {speed:.2f} m/s" if speed is not None else "Speed: ---"
             angle_str = f"Movement Angle: {math.degrees(direction):.1f}°" if direction is not None and speed >= 0.1 else "Movement Angle: ---"
-            mode_str = "Mode: RELATIVE (3D)" if cursor_controller and cursor_controller.relative_mode else "Mode: ABSOLUTE"
             
             self.save_dc.SetTextColor(0x00FF00)
             self.save_dc.TextOut(110, 70, fps_str)
             self.save_dc.TextOut(110, 90, distance_str)
             self.save_dc.TextOut(110, 110, speed_str)
             self.save_dc.TextOut(110, 130, angle_str)
-            self.save_dc.TextOut(110, 150, mode_str)
             
             # Счетчики производительности
             if perf_stats:
@@ -481,6 +637,16 @@ class CursorController:
         self.is_moving = False
         self.target_distance = 2.0  # Целевая дистанция в метрах
         self.movement_threshold = 0.1  # Порог для начала движения
+        self.following_enabled = True  # Состояние следования за целью
+        
+        # Параметры для режима атаки
+        self.attack_enabled = False
+        self.last_key1_time = 0
+        self.last_mouse1_time = 0
+        self.key1_interval = random.uniform(2.0, 4.0)  # Интервал для клавиши 1
+        self.mouse1_interval = random.uniform(0.5, 0.7)  # Интервал для Mouse1
+        self.last_box = None  # Последняя известная рамка
+        self.last_distance = None  # Последнее известное расстояние
 
     def is_crosshair_in_box(self, box):
         """Проверяет, находится ли прицел внутри рамки"""
@@ -492,7 +658,7 @@ class CursorController:
 
     def handle_auto_movement(self, distance, box):
         """Управляет автоматическим движением к цели"""
-        if not box:
+        if not box or not self.following_enabled:
             if self.is_moving:
                 keyboard.release('w')
                 self.is_moving = False
@@ -530,6 +696,61 @@ class CursorController:
                 self.last_position = (self.center_x, self.center_y)
             return True
         return False
+
+    def toggle_following(self):
+        """Переключает состояние следования за целью"""
+        current_time = time.time()
+        if current_time - self.last_mode_switch_time >= 0.5:  # Предотвращаем частое переключение
+            self.following_enabled = not self.following_enabled
+            self.last_mode_switch_time = current_time
+            print(f"Following {'ENABLED' if self.following_enabled else 'DISABLED'}")
+            return True
+        return False
+
+    def toggle_attack(self):
+        """Переключает режим атаки"""
+        current_time = time.time()
+        if current_time - self.last_mode_switch_time >= 0.5:  # Предотвращаем частое переключение
+            self.attack_enabled = not self.attack_enabled
+            self.last_mode_switch_time = current_time
+            if self.attack_enabled:
+                self.last_key1_time = current_time
+                self.key1_interval = random.uniform(2.0, 4.0)  # Новый случайный интервал
+            print(f"Attack mode {'ENABLED' if self.attack_enabled else 'DISABLED'}")
+            return True
+        return False
+
+    def handle_attack(self):
+        """Управляет комбинированной атакой"""
+        if not self.attack_enabled:
+            return
+
+        current_time = time.time()
+        
+        # Обработка нажатия клавиши 1
+        if current_time - self.last_key1_time >= self.key1_interval:
+            try:
+                keyboard.press('1')
+                time.sleep(0.1)  # Короткая задержка для надежности
+                keyboard.release('1')
+                self.last_key1_time = current_time
+                self.key1_interval = random.uniform(2.0, 4.0)  # Новый случайный интервал
+            except Exception as e:
+                print(f"Error in key1 press: {str(e)}")
+        
+        # Обработка нажатия Mouse1 только если прицел в рамке и расстояние подходящее
+        if current_time - self.last_mouse1_time >= self.mouse1_interval:
+            try:
+                # Проверяем, находится ли прицел в рамке и расстояние
+                if hasattr(self, 'last_box') and self.last_box and self.last_distance is not None:
+                    if self.is_crosshair_in_box(self.last_box) and self.last_distance <= 20.0:
+                        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                        time.sleep(0.05)  # Короткая задержка
+                        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                        self.last_mouse1_time = current_time
+                        self.mouse1_interval = random.uniform(0.5, 0.7)  # Новый случайный интервал
+            except Exception as e:
+                print(f"Error in mouse1 click: {str(e)}")
 
     def move_cursor(self, target_x, target_y):
         try:
@@ -624,6 +845,9 @@ class CursorController:
             height_pixels = max_y - min_y
             # Нормализуем расстояние: 1 метр при высоте 1/3 экрана, умножаем на 2 для соответствия реальной дистанции
             distance = 2 * (frame_height / 3) / height_pixels if height_pixels > 0 else 0
+            
+            # Сохраняем последнее расстояние для проверки в handle_attack
+            self.last_distance = distance
             
             # Простой расчет скорости
             if self.last_position:
@@ -992,31 +1216,34 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                     screen_height
                 )
                 
-                # Добавляем тело в список объектов
-                detected_objects.append({
-                    'type': 'body',
-                    'landmarks': results.pose_landmarks,
-                    'color': (0, 255, 0),
-                    'box': DrawingUtils.draw_bounding_box(
-                        frame,
-                        results.pose_landmarks,
-                        (0, 255, 0),
-                        20,
-                        2
-                    )
-                })
-                
-                # Управляем автоматическим движением
-                cursor_controller.handle_auto_movement(target_distance, DrawingUtils.draw_bounding_box(
+                # Создаем рамку для объекта
+                box = DrawingUtils.draw_bounding_box(
                     frame,
                     results.pose_landmarks,
                     (0, 255, 0),
                     20,
                     2
-                ))
+                )
+                
+                # Сохраняем рамку в контроллере
+                cursor_controller.last_box = box
+                
+                # Добавляем тело в список объектов
+                detected_objects.append({
+                    'type': 'body',
+                    'landmarks': results.pose_landmarks,
+                    'color': (0, 255, 0),
+                    'box': box
+                })
+                
+                # Управляем автоматическим движением
+                cursor_controller.handle_auto_movement(target_distance, box)
                 
             except Exception as e:
                 print(f"Error processing pose landmarks: {str(e)}")
+        else:
+            # Если объект не обнаружен, сбрасываем рамку
+            cursor_controller.last_box = None
         
         # Перемещаем курсор к цели
         if target_x is not None and target_y is not None:
@@ -1101,6 +1328,8 @@ def main():
         
         print("Starting main loop...")
         print("Press '-' to toggle between absolute and relative mouse movement modes")
+        print("Press '+' to toggle following mode")
+        print("Press 'Backspace' to toggle attack mode")
         print("Press 'F1' to exit")
         print("Press '.' to start/stop recording")
         
@@ -1117,6 +1346,12 @@ def main():
                         recorder.stop_recording()
                 elif keyboard.is_pressed('-'):
                     if cursor_controller.toggle_mode():
+                        time.sleep(0.1)  # Короткая задержка только при успешном переключении
+                elif keyboard.is_pressed('+'):
+                    if cursor_controller.toggle_following():
+                        time.sleep(0.1)  # Короткая задержка только при успешном переключении
+                elif keyboard.is_pressed('backspace'):
+                    if cursor_controller.toggle_attack():
                         time.sleep(0.1)  # Короткая задержка только при успешном переключении
                 
                 perf_monitor.start('capture')
