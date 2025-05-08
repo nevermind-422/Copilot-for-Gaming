@@ -159,6 +159,10 @@ class OverlayWindow:
         # Цвета для индикации состояния
         self.following_color = 0x00FF00  # Зеленый для активного состояния
         self.following_disabled_color = 0xFF0000  # Красный для неактивного состояния
+        
+        # Добавляем цвета для интерполяции
+        self.interpolation_enabled_color = 0x00FF00  # Зеленый
+        self.interpolation_disabled_color = 0xFF0000  # Красный
 
     def draw_skeleton(self, landmarks, color):
         """Рисует скелет с помощью линий и точек"""
@@ -510,6 +514,60 @@ class OverlayWindow:
         except Exception as e:
             print(f"Error drawing attack status: {str(e)}")
 
+    def draw_interpolation_status(self, cursor_controller):
+        """Рисует статус интерполяции"""
+        try:
+            # Позиция и размеры блока
+            block_width = 200
+            block_height = 80
+            block_x = 570  # Та же x-координата, что и у других блоков
+            block_y = 210  # Располагаем под блоком атаки
+            
+            # Получаем статус интерполяции
+            status = cursor_controller.get_interpolation_status()
+            
+            # Цвета
+            bg_color = self.interpolation_enabled_color if status['enabled'] else self.interpolation_disabled_color
+            text_color = 0xFFFFFF  # Белый текст
+            
+            # Рисуем фон блока
+            brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
+            self.save_dc.SelectObject(brush)
+            self.save_dc.Rectangle((block_x, block_y, block_x + block_width, block_y + block_height))
+            
+            # Рисуем рамку
+            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0xFFFFFF)
+            self.save_dc.SelectObject(pen)
+            self.save_dc.Rectangle((block_x, block_y, block_x + block_width, block_y + block_height))
+            
+            # Рисуем текст
+            self.save_dc.SetTextColor(text_color)
+            status_text = f"INTERPOLATION: {'ON' if status['enabled'] else 'OFF'}"
+            rate_text = f"RATE: {status['rate']} FPS"
+            buffer_text = f"BUFFER: {status['positions']}/{status['times']}"
+            
+            # Центрируем текст
+            self.save_dc.TextOut(block_x + 10, block_y + 10, status_text)
+            self.save_dc.TextOut(block_x + 10, block_y + 30, rate_text)
+            self.save_dc.TextOut(block_x + 10, block_y + 50, buffer_text)
+            
+            # Добавляем подсказки с хоткеями
+            hotkey_text = "I : Toggle"
+            self.save_dc.SetTextColor(0x00FF00)
+            self.save_dc.TextOut(block_x - 60, block_y + 10, hotkey_text)
+            
+            hotkey_text = "[ ] : Rate"
+            self.save_dc.TextOut(block_x - 60, block_y + 30, hotkey_text)
+            
+            # Очищаем ресурсы
+            try:
+                brush.DeleteObject()
+            except:
+                pass
+            
+        except Exception as e:
+            print(f"Error drawing interpolation status: {str(e)}")
+
     def update_info(self, cursor_pos, target_pos, distance, movement, detected_objects=None, fps=0, perf_stats=None, speed=0, direction=0, cursor_controller=None):
         current_time = time.time()
         if current_time - self.last_update_time < self.update_interval:
@@ -523,7 +581,8 @@ class OverlayWindow:
                 self.draw_following_status(cursor_controller)
                 self.draw_mode_status(cursor_controller)
                 self.draw_attack_status(cursor_controller)
-                cursor_controller.handle_attack()  # Обработка атак
+                self.draw_interpolation_status(cursor_controller)  # Добавляем отображение статуса интерполяции
+                cursor_controller.handle_attack()
             
             if detected_objects:
                 for obj in detected_objects:
@@ -618,42 +677,130 @@ class OverlayWindow:
 class CursorController:
     def __init__(self):
         self.relative_mode = False
-        self.sensitivity = 0.075  # Уменьшена чувствительность в два раза (было 0.15)
+        self.sensitivity = 0.12
         self.center_x = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN) // 2
         self.center_y = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN) // 2
         self.last_mode_switch_time = 0
         self.last_position = None
         
         # Параметры для абсолютного режима
-        self.smoothing_factor = 0.3
-        self.min_distance = 5
-        self.max_speed = 20
+        self.smoothing_factor = 0.2
+        self.min_distance = 2
+        self.max_speed = 12
         
         # Параметры для сглаживания в относительном режиме
-        self.move_history = deque(maxlen=3)  # История последних движений
-        self.max_move = 15  # Уменьшено максимальное смещение за один кадр (было 30)
+        self.move_history = deque(maxlen=8)
+        self.max_move = 10
         
         # Параметры для автоматического движения
         self.is_moving = False
-        self.target_distance = 2.0  # Целевая дистанция в метрах
-        self.movement_threshold = 0.1  # Порог для начала движения
-        self.following_enabled = True  # Состояние следования за целью
+        self.target_distance = 2.0
+        self.movement_threshold = 0.03
+        self.following_enabled = True
         
         # Параметры для режима атаки
         self.attack_enabled = False
         self.last_key1_time = 0
         self.last_mouse1_time = 0
-        self.key1_interval = random.uniform(2.0, 4.0)  # Интервал для клавиши 1
-        self.mouse1_interval = random.uniform(0.5, 0.7)  # Интервал для Mouse1
-        self.last_box = None  # Последняя известная рамка
-        self.last_distance = None  # Последнее известное расстояние
+        self.key1_interval = random.uniform(2.0, 4.0)
+        self.mouse1_interval = random.uniform(0.5, 0.7)
+        self.last_box = None
+        self.last_distance = None
         
         # История позиций запястий для проверки стабильности
-        self.wrist_positions = deque(maxlen=10)  # Храним последние 10 позиций
-        self.stability_threshold = 0.02  # Порог стабильности (можно настроить)
+        self.wrist_positions = deque(maxlen=20)
+        self.stability_threshold = 0.012
+        self.last_stability_check = time.time()
+        
+        # Параметры для интерполяции
+        self.last_update_time = time.time()
+        self.target_positions = deque(maxlen=5)
+        self.target_times = deque(maxlen=5)
+        self.interpolation_enabled = True
+        self.interpolation_rate = 120
+        self.last_interpolated_time = time.time()
+        self.interpolation_rates = [60, 120, 240, 480]
+        self.current_rate_index = 1
+        self.last_interpolation_toggle_time = 0
+        
+        # Параметры для плавного ускорения/замедления
+        self.current_speed = 0.0
+        self.target_speed = 0.0
+        self.acceleration = 0.15
+        self.deceleration = 0.2
+        
+        # Параметры для стабилизации в рамке
+        self.in_box_smoothing = 0.1  # Дополнительное сглаживание при нахождении в рамке
+        self.in_box_threshold = 5  # Порог для определения нахождения в рамке
+        self.last_in_box_time = 0
+        self.in_box_cooldown = 0.1  # Время в секундах для сохранения состояния "в рамке"
+
+    def toggle_interpolation(self):
+        """Переключает режим интерполяции"""
+        current_time = time.time()
+        if current_time - self.last_interpolation_toggle_time >= 0.5:  # Защита от частых переключений
+            self.interpolation_enabled = not self.interpolation_enabled
+            self.last_interpolation_toggle_time = current_time
+            print(f"Interpolation {'ENABLED' if self.interpolation_enabled else 'DISABLED'}")
+            return True
+        return False
+
+    def change_interpolation_rate(self, increase=True):
+        """Изменяет частоту интерполяции"""
+        current_time = time.time()
+        if current_time - self.last_interpolation_toggle_time >= 0.5:  # Защита от частых изменений
+            if increase:
+                self.current_rate_index = min(self.current_rate_index + 1, len(self.interpolation_rates) - 1)
+            else:
+                self.current_rate_index = max(self.current_rate_index - 1, 0)
+            
+            self.interpolation_rate = self.interpolation_rates[self.current_rate_index]
+            self.last_interpolation_toggle_time = current_time
+            print(f"Interpolation rate changed to {self.interpolation_rate} FPS")
+            return True
+        return False
+
+    def get_interpolation_status(self):
+        """Возвращает статус интерполяции для отображения"""
+        return {
+            'enabled': self.interpolation_enabled,
+            'rate': self.interpolation_rate,
+            'positions': len(self.target_positions),
+            'times': len(self.target_times)
+        }
+
+    def interpolate_position(self, current_time):
+        """Интерполирует позицию между последними двумя целевыми позициями"""
+        if len(self.target_positions) < 2 or len(self.target_times) < 2:
+            return None
+
+        t0, t1 = self.target_times[0], self.target_times[1]
+        if t1 <= t0:  # Защита от некорректных времен
+            return None
+
+        # Вычисляем коэффициент интерполяции
+        alpha = (current_time - t0) / (t1 - t0)
+        if alpha < 0 or alpha > 1:  # Выход за пределы интервала
+            return None
+
+        # Линейная интерполяция между позициями
+        x0, y0 = self.target_positions[0]
+        x1, y1 = self.target_positions[1]
+        interpolated_x = x0 + alpha * (x1 - x0)
+        interpolated_y = y0 + alpha * (y1 - y0)
+
+        return interpolated_x, interpolated_y
 
     def check_stability(self, left_wrist, right_wrist):
         """Проверяет стабильность положения запястий"""
+        current_time = time.time()
+        
+        # Проверяем, прошло ли достаточно времени с последней проверки
+        if current_time - self.last_stability_check < 0.1:  # Проверяем не чаще 10 раз в секунду
+            return True
+        
+        self.last_stability_check = current_time
+        
         if not left_wrist or not right_wrist:
             return True  # Если нет данных, считаем стабильным
             
@@ -695,8 +842,20 @@ class CursorController:
         if not box:
             return False
         min_x, min_y, max_x, max_y = box
-        return (min_x <= self.center_x <= max_x and 
-                min_y <= self.center_y <= max_y)
+        current_time = time.time()
+        
+        # Проверяем, находится ли курсор в рамке
+        in_box = (min_x <= self.center_x <= max_x and 
+                 min_y <= self.center_y <= max_y)
+        
+        # Если курсор в рамке, обновляем время последнего нахождения в рамке
+        if in_box:
+            self.last_in_box_time = current_time
+            return True
+        
+        # Если прошло меньше времени чем in_box_cooldown с последнего нахождения в рамке,
+        # считаем что курсор все еще в рамке
+        return current_time - self.last_in_box_time < self.in_box_cooldown
 
     def handle_auto_movement(self, distance, box):
         """Управляет автоматическим движением к цели"""
@@ -796,62 +955,136 @@ class CursorController:
 
     def move_cursor(self, target_x, target_y):
         try:
+            current_time = time.time()
+            
+            # Обновляем историю целевых позиций
+            if target_x is not None and target_y is not None:
+                self.target_positions.append((target_x, target_y))
+                self.target_times.append(current_time)
+            
+            # Если интерполяция включена и у нас есть достаточно данных
+            if self.interpolation_enabled and len(self.target_positions) >= 2:
+                # Проверяем, нужно ли обновлять интерполированную позицию
+                if current_time - self.last_interpolated_time >= 1.0 / self.interpolation_rate:
+                    interpolated_pos = self.interpolate_position(current_time)
+                    if interpolated_pos:
+                        target_x, target_y = interpolated_pos
+                        self.last_interpolated_time = current_time
+
             if self.relative_mode:
+                # Получаем текущую позицию курсора
+                current_x, current_y = win32api.GetCursorPos()
+                
                 # Вычисляем смещение относительно центра экрана
                 dx = target_x - self.center_x
                 dy = target_y - self.center_y
                 
-                # Применяем чувствительность
-                move_x = dx * self.sensitivity
-                move_y = dy * self.sensitivity
+                # Вычисляем целевую скорость на основе расстояния
+                distance = math.sqrt(dx * dx + dy * dy)
                 
-                # Ограничиваем максимальное смещение за кадр
-                move_x = max(min(move_x, self.max_move), -self.max_move)
-                move_y = max(min(move_y, self.max_move), -self.max_move)
+                # Если курсор в рамке, уменьшаем чувствительность
+                if self.is_crosshair_in_box(self.last_box):
+                    self.target_speed = min(distance * self.sensitivity * 0.5, self.max_speed * 0.5)
+                else:
+                    self.target_speed = min(distance * self.sensitivity, self.max_speed)
+                
+                # Плавно изменяем текущую скорость
+                if self.target_speed > self.current_speed:
+                    self.current_speed = min(self.current_speed + self.acceleration, self.target_speed)
+                else:
+                    self.current_speed = max(self.current_speed - self.deceleration, self.target_speed)
+                
+                # Применяем текущую скорость к смещению
+                if distance > 0:
+                    move_x = int((dx / distance) * self.current_speed)
+                    move_y = int((dy / distance) * self.current_speed)
+                else:
+                    move_x = 0
+                    move_y = 0
                 
                 # Добавляем текущее движение в историю
                 self.move_history.append((move_x, move_y))
                 
-                # Вычисляем сглаженное движение как среднее по истории
+                # Вычисляем сглаженное движение как взвешенное среднее по истории
                 if len(self.move_history) > 0:
-                    smooth_x = sum(x for x, _ in self.move_history) / len(self.move_history)
-                    smooth_y = sum(y for _, y in self.move_history) / len(self.move_history)
+                    # Используем разные веса в зависимости от того, находится ли курсор в рамке
+                    if self.is_crosshair_in_box(self.last_box):
+                        weights = [0.05, 0.1, 0.15, 0.2, 0.5]  # Более агрессивное сглаживание в рамке
+                    else:
+                        weights = [0.1, 0.15, 0.2, 0.25, 0.3]  # Обычные веса
                     
-                    # Применяем сглаженное движение только если оно достаточно большое
-                    if abs(smooth_x) > 0.1 or abs(smooth_y) > 0.1:
+                    smooth_x = 0
+                    smooth_y = 0
+                    total_weight = 0
+                    
+                    for i, (x, y) in enumerate(reversed(list(self.move_history))):
+                        if i < len(weights):
+                            weight = weights[i]
+                            smooth_x += x * weight
+                            smooth_y += y * weight
+                            total_weight += weight
+                    
+                    if total_weight > 0:
+                        smooth_x = int(smooth_x / total_weight)
+                        smooth_y = int(smooth_y / total_weight)
+                        
+                        # Применяем сглаженное движение
                         win32api.mouse_event(
                             win32con.MOUSEEVENTF_MOVE,
-                            int(smooth_x),
-                            int(smooth_y),
+                            smooth_x,
+                            smooth_y,
                             0, 0
                         )
                 
-                return self.center_x, self.center_y
+                return current_x + move_x, current_y + move_y
             else:
-                # Стандартный режим абсолютного позиционирования
-                current_x, current_y = win32api.GetCursorPos()
-                dx = target_x - current_x
-                dy = target_y - current_y
-                distance = (dx**2 + dy**2)**0.5
-                
-                if distance < self.min_distance:
-                    return current_x, current_y
+                # Абсолютный режим
+                if target_x is not None and target_y is not None:
+                    # Получаем текущую позицию курсора
+                    current_x, current_y = win32api.GetCursorPos()
                     
-                if distance > self.max_speed:
-                    scale = self.max_speed / distance
-                    dx *= scale
-                    dy *= scale
+                    # Вычисляем смещение
+                    dx = target_x - current_x
+                    dy = target_y - current_y
                     
-                move_x = int(dx * self.smoothing_factor)
-                move_y = int(dy * self.smoothing_factor)
+                    # Вычисляем расстояние и целевую скорость
+                    distance = math.sqrt(dx * dx + dy * dy)
+                    
+                    # Если курсор в рамке, уменьшаем скорость
+                    if self.is_crosshair_in_box(self.last_box):
+                        self.target_speed = min(distance * self.smoothing_factor * 0.5, self.max_speed * 0.5)
+                    else:
+                        self.target_speed = min(distance * self.smoothing_factor, self.max_speed)
+                    
+                    # Плавно изменяем текущую скорость
+                    if self.target_speed > self.current_speed:
+                        self.current_speed = min(self.current_speed + self.acceleration, self.target_speed)
+                    else:
+                        self.current_speed = max(self.current_speed - self.deceleration, self.target_speed)
+                    
+                    # Применяем текущую скорость к смещению
+                    if distance > 0:
+                        move_x = int((dx / distance) * self.current_speed)
+                        move_y = int((dy / distance) * self.current_speed)
+                    else:
+                        move_x = 0
+                        move_y = 0
+                    
+                    # Вычисляем новую позицию
+                    new_x = current_x + move_x
+                    new_y = current_y + move_y
+                    
+                    # Ограничиваем позицию границами экрана
+                    screen_width = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
+                    screen_height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
+                    new_x = max(0, min(new_x, screen_width - 1))
+                    new_y = max(0, min(new_y, screen_height - 1))
+                    
+                    # Перемещаем курсор
+                    win32api.SetCursorPos((new_x, new_y))
+                    return new_x, new_y
                 
-                screen_width = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
-                screen_height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
-                new_x = max(0, min(current_x + move_x, screen_width - 1))
-                new_y = max(0, min(current_y + move_y, screen_height - 1))
-                
-                win32api.SetCursorPos((new_x, new_y))
-                return new_x, new_y
+                return current_x, current_y
                 
         except Exception as e:
             print(f"Error in move_cursor: {str(e)}")
@@ -867,6 +1100,11 @@ class CursorController:
             # Получаем координаты центра тела (между плечами)
             left_shoulder = landmarks.landmark[mp_holistic.PoseLandmark.LEFT_SHOULDER]
             right_shoulder = landmarks.landmark[mp_holistic.PoseLandmark.RIGHT_SHOULDER]
+            left_wrist = landmarks.landmark[mp_holistic.PoseLandmark.LEFT_WRIST]
+            right_wrist = landmarks.landmark[mp_holistic.PoseLandmark.RIGHT_WRIST]
+            
+            if not all([left_shoulder, right_shoulder, left_wrist, right_wrist]):
+                return None, None, None, 0.0, 0.0
             
             # Вычисляем центр между плечами
             center_x = (left_shoulder.x + right_shoulder.x) / 2
@@ -885,23 +1123,49 @@ class CursorController:
                 max_y = max(max_y, y)
             
             height_pixels = max_y - min_y
-            # Нормализуем расстояние: 1 метр при высоте 1/3 экрана, умножаем на 2 для соответствия реальной дистанции
-            distance = 2 * (frame_height / 3) / height_pixels if height_pixels > 0 else 0
-            
+            # Нормализуем расстояние: 1 метр при высоте 1/3 экрана
+            distance = (frame_height / 3) / height_pixels if height_pixels > 0 else 0
+                
             # Сохраняем последнее расстояние для проверки в handle_attack
             self.last_distance = distance
             
-            # Простой расчет скорости
-            if self.last_position:
+            # Вычисляем скорость и направление
+            current_time = time.time()
+            dt = current_time - self.last_update_time
+            self.last_update_time = current_time
+            
+            # Вычисляем скорость как изменение позиции в метрах в секунду
+            speed = 0.0
+            direction = 0.0
+            
+            if self.last_position is not None and dt > 0:
                 dx = pixel_x - self.last_position[0]
                 dy = pixel_y - self.last_position[1]
-                # Нормализуем скорость: 1 м/с при движении на 1/10 экрана в секунду
-                speed = (dx * dx + dy * dy) ** 0.5 / (frame_width / 10)
+                
+                # Конвертируем пиксели в метры (используем то же соотношение, что и для расстояния)
+                meters_per_pixel = distance / (height_pixels if height_pixels > 0 else 1)
+                dx_meters = dx * meters_per_pixel
+                dy_meters = dy * meters_per_pixel
+                
+                # Вычисляем скорость в метрах в секунду
+                speed = math.sqrt(dx_meters * dx_meters + dy_meters * dy_meters) / dt
+                
+                # Ограничиваем максимальную скорость до реалистичного значения (например, 5 м/с)
+                speed = min(speed, 5.0)
+                
+                # Вычисляем направление в градусах (0 - вправо, 90 - вниз)
+                # Используем atan2 для получения угла в правильном квадранте
                 direction = math.atan2(dy, dx)
-            else:
-                speed = 0.0
-                direction = 0.0
+                
+                # Нормализуем угол в диапазон [-180, 180]
+                direction_degrees = math.degrees(direction)
+                if direction_degrees < -180:
+                    direction_degrees += 360
+                elif direction_degrees > 180:
+                    direction_degrees -= 360
+                direction = math.radians(direction_degrees)
             
+            # Обновляем последнюю позицию
             self.last_position = (pixel_x, pixel_y)
             
             return pixel_x, pixel_y, distance, speed, direction
@@ -1244,101 +1508,105 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
         results = holistic.process(rgb_frame)
         perf_monitor.stop('detection')
         
+        # Проверяем результаты MediaPipe
+        if results is None:
+            print("Error: MediaPipe returned None results")
+            return None, None, None, 0.0, 0.0, []
+        
         # Список для хранения всех найденных объектов
         detected_objects = []
         target_x, target_y, target_distance, speed, direction = None, None, None, 0.0, 0.0
         
         # Обрабатываем результаты распознавания
-        if results.pose_landmarks:
+        if results.pose_landmarks and len(results.pose_landmarks.landmark) > 0:
             try:
-                # Создаем временную рамку для проверки размера
-                temp_box = DrawingUtils.draw_bounding_box(
-                    frame,
-                    results.pose_landmarks,
-                    (0, 255, 0),
-                    20,
-                    2
-                )
+                # Проверяем наличие ключевых точек
+                left_wrist = results.pose_landmarks.landmark[mp_holistic.PoseLandmark.LEFT_WRIST]
+                right_wrist = results.pose_landmarks.landmark[mp_holistic.PoseLandmark.RIGHT_WRIST]
+                left_shoulder = results.pose_landmarks.landmark[mp_holistic.PoseLandmark.LEFT_SHOULDER]
+                right_shoulder = results.pose_landmarks.landmark[mp_holistic.PoseLandmark.RIGHT_SHOULDER]
                 
-                if temp_box:
-                    # Проверяем размер области
-                    min_x, min_y, max_x, max_y = temp_box
-                    width = max_x - min_x
-                    height = max_y - min_y
-                    area = width * height
+                if all(point is not None for point in [left_wrist, right_wrist, left_shoulder, right_shoulder]):
+                    # Создаем временную рамку для проверки размера
+                    temp_box = DrawingUtils.draw_bounding_box(
+                        frame,
+                        results.pose_landmarks,
+                        (0, 255, 0),
+                        15,  # Уменьшаем padding для более точной рамки
+                        2
+                    )
                     
-                    # Проверяем положение области
-                    center_y = (min_y + max_y) / 2
-                    center_x = (min_x + max_x) / 2
-                    
-                    # Проверяем, находится ли центр области в нижней трети экрана
-                    is_in_lower_third = center_y > (screen_height * 2/3)
-                    
-                    # Проверяем, находится ли центр области в центральной трети по горизонтали
-                    is_in_center_third = (screen_width/3) <= center_x <= (screen_width * 2/3)
-                    
-                    # Проверяем глубину (z-координату) ключевых точек
-                    left_wrist = results.pose_landmarks.landmark[mp_holistic.PoseLandmark.LEFT_WRIST]
-                    right_wrist = results.pose_landmarks.landmark[mp_holistic.PoseLandmark.RIGHT_WRIST]
-                    left_shoulder = results.pose_landmarks.landmark[mp_holistic.PoseLandmark.LEFT_SHOULDER]
-                    right_shoulder = results.pose_landmarks.landmark[mp_holistic.PoseLandmark.RIGHT_SHOULDER]
-                    
-                    # Вычисляем среднюю z-координату запястий и плеч
-                    wrist_z = (left_wrist.z + right_wrist.z) / 2
-                    shoulder_z = (left_shoulder.z + right_shoulder.z) / 2
-                    
-                    # Если запястья находятся ближе к камере, чем плечи, это могут быть руки
-                    # z-координата в MediaPipe: меньше = ближе к камере
-                    is_hands_closer = wrist_z < shoulder_z - 0.1  # Порог 0.1 можно настроить
-                    
-                    # Проверяем стабильность положения
-                    is_stable = cursor_controller.check_stability(left_wrist, right_wrist)
-                    
-                    # Игнорируем обнаружение, если:
-                    # 1. Область находится в нижней трети экрана И
-                    # 2. Область находится в центральной трети по горизонтали И
-                    # 3. (Запястья находятся ближе к камере, чем плечи ИЛИ положение нестабильно)
-                    should_ignore = is_in_lower_third and is_in_center_third and (is_hands_closer or not is_stable)
-                    
-                    # Минимальный размер области для детекции
-                    MIN_DETECTION_AREA = 50000
-                    
-                    if not should_ignore and area >= MIN_DETECTION_AREA:
-                        # Получаем 3D позицию цели
-                        target_x, target_y, target_distance, speed, direction = cursor_controller.calculate_3d_position(
-                            results.pose_landmarks,
-                            screen_width,
-                            screen_height
+                    if temp_box:
+                        # Проверяем размер области
+                        min_x, min_y, max_x, max_y = temp_box
+                        width = max_x - min_x
+                        height = max_y - min_y
+                        area = width * height
+                        
+                        # Проверяем положение области
+                        center_y = (min_y + max_y) / 2
+                        center_x = (min_x + max_x) / 2
+                        
+                        # Проверяем, находится ли центр области в нижней трети экрана
+                        is_in_lower_third = center_y > (screen_height * 3/4)
+                        
+                        # Проверяем, находится ли центр области в центральной трети по горизонтали
+                        is_in_center_third = (screen_width/3) <= center_x <= (screen_width * 2/3)
+                        
+                        # Вычисляем среднюю z-координату запястий и плеч
+                        wrist_z = (left_wrist.z + right_wrist.z) / 2
+                        shoulder_z = (left_shoulder.z + right_shoulder.z) / 2
+                        
+                        # Если запястья находятся ближе к камере, чем плечи, это могут быть руки
+                        is_hands_closer = wrist_z < shoulder_z - 0.15
+                        
+                        # Проверяем стабильность положения
+                        is_stable = cursor_controller.check_stability(left_wrist, right_wrist)
+                        
+                        # Минимальный размер области для детекции
+                        MIN_DETECTION_AREA = 20000  # Уменьшаем минимальную площадь для лучшей детекции на расстоянии
+                        
+                        # Игнорируем обнаружение только если все условия выполнены
+                        should_ignore = (
+                            is_in_lower_third and 
+                            is_in_center_third and 
+                            is_hands_closer and 
+                            not is_stable
                         )
                         
-                        # Сохраняем рамку в контроллере
-                        cursor_controller.last_box = temp_box
-                        
-                        # Добавляем тело в список объектов
-                        detected_objects.append({
-                            'type': 'body',
-                            'landmarks': results.pose_landmarks,
-                            'color': (0, 255, 0),
-                            'box': temp_box
-                        })
-                        
-                        # Управляем автоматическим движением
-                        cursor_controller.handle_auto_movement(target_distance, temp_box)
-                    else:
-                        # Если область должна быть проигнорирована, сбрасываем рамку
-                        cursor_controller.last_box = None
-                
-                # Перемещаем курсор к цели
-                if target_x is not None and target_y is not None:
-                    perf_monitor.start('cursor')
-                    cursor_x, cursor_y = cursor_controller.move_cursor(target_x, target_y)
-                    perf_monitor.stop('cursor')
-                    
+                        if not should_ignore and area >= MIN_DETECTION_AREA:
+                            # Получаем 3D позицию цели
+                            target_x, target_y, target_distance, speed, direction = cursor_controller.calculate_3d_position(
+                                results.pose_landmarks,
+                                screen_width,
+                                screen_height
+                            )
+                            
+                            # Сохраняем рамку в контроллере
+                            cursor_controller.last_box = temp_box
+                            
+                            # Добавляем тело в список объектов
+                            detected_objects.append({
+                                'type': 'body',
+                                'landmarks': results.pose_landmarks,
+                                'color': (0, 255, 0),
+                                'box': temp_box
+                            })
+                            
+                            # Управляем автоматическим движением
+                            cursor_controller.handle_auto_movement(target_distance, temp_box)
+                        else:
+                            cursor_controller.last_box = None
             except Exception as e:
                 print(f"Error processing pose landmarks: {str(e)}")
-        else:
-            # Если объект не обнаружен, сбрасываем рамку
-            cursor_controller.last_box = None
+                import traceback
+                traceback.print_exc()
+        
+        # Перемещаем курсор к цели
+        if target_x is not None and target_y is not None:
+            perf_monitor.start('cursor')
+            cursor_x, cursor_y = cursor_controller.move_cursor(target_x, target_y)
+            perf_monitor.stop('cursor')
         
         perf_monitor.stop('process')
         return target_x, target_y, target_distance, speed, direction, detected_objects
