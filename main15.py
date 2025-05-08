@@ -111,11 +111,13 @@ class OverlayWindow:
             "Static",
             "Overlay",
             win32con.WS_POPUP | win32con.WS_VISIBLE,
-            0, 0, 1920, 1080,
+            0, 0,
+            win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN),
+            win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN),
             0, 0, 0, None
         )
         
-        # Устанавливаем прозрачность
+        # Устанавливаем прозрачность окна
         win32gui.SetLayeredWindowAttributes(
             self.hwnd,
             0,
@@ -123,7 +125,7 @@ class OverlayWindow:
             win32con.LWA_ALPHA
         )
         
-        # Получаем DC окна
+        # Создаем DC и битмап
         self.hdc = win32gui.GetDC(self.hwnd)
         self.mfc_dc = win32ui.CreateDCFromHandle(self.hdc)
         self.save_dc = self.mfc_dc.CreateCompatibleDC()
@@ -133,7 +135,7 @@ class OverlayWindow:
         self.bitmap.CreateCompatibleBitmap(self.mfc_dc, 1920, 1080)
         self.save_dc.SelectObject(self.bitmap)
         
-        # Загружаем шрифт для счетчиков
+        # Создаем шрифт
         self.font = win32ui.CreateFont({
             'name': 'Consolas',
             'height': 20,
@@ -141,26 +143,22 @@ class OverlayWindow:
             'charset': win32con.ANSI_CHARSET
         })
         
-        self.last_update_time = 0
-        self.update_interval = 1.0 / 60.0  # Обновляем оверлей 60 раз в секунду
-        
-        # Устанавливаем окно поверх всех окон
-        win32gui.SetWindowPos(
-            self.hwnd,
-            win32con.HWND_TOPMOST,
-            0, 0, 0, 0,
-            win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE
-        )
-        
-        # Добавляем параметры для прицела
-        self.crosshair_size = 15
+        # Цвета и размеры для прицела
+        self.crosshair_color = 0x00FF00  # Зеленый для абсолютного режима
+        self.crosshair_relative_color = 0x00FFFF  # Голубой для относительного режима
+        self.crosshair_size = 15  # Уменьшенный размер прицела
         self.crosshair_thickness = 2
-        self.crosshair_color = 0x00FF00  # Зеленый цвет для абсолютного режима
-        self.crosshair_relative_color = 0x00FFFF  # Голубой цвет для относительного режима
+        self.crosshair_dot_radius = 3  # Радиус точек на концах линий
+        
+        self.last_update_time = time.time()
+        self.update_interval = 1.0 / 60.0  # 60 FPS
+        
+        # Флаг для отрисовки скелета
+        self.draw_skeleton_enabled = False
 
     def draw_skeleton(self, landmarks, color):
         """Рисует скелет с помощью линий и точек"""
-        if not landmarks:
+        if not landmarks or not self.draw_skeleton_enabled:
             return
         pen = win32ui.CreatePen(win32con.PS_SOLID, 2, color[2] << 16 | color[1] << 8 | color[0])
         self.save_dc.SelectObject(pen)
@@ -364,16 +362,16 @@ class OverlayWindow:
             return
         self.last_update_time = current_time
         try:
-            self.save_dc.FillSolidRect((0, 0, 1920, 1080), 0)
+            self.save_dc.FillSolidRect((0, 0, 1920, 1080), 0x000000)
             
-            # Рисуем прицел
             if cursor_controller:
                 self.draw_crosshair(cursor_controller)
             
             if detected_objects:
                 for obj in detected_objects:
                     if obj['type'] == 'body':
-                        self.draw_skeleton(obj['landmarks'], obj['color'])
+                        if self.draw_skeleton_enabled:
+                            self.draw_skeleton(obj['landmarks'], obj['color'])
                         if 'box' in obj:
                             self.draw_bounding_box(obj['box'], obj['color'])
             
@@ -585,13 +583,15 @@ class CursorController:
                 max_y = max(max_y, y)
             
             height_pixels = max_y - min_y
-            distance = 1000 / height_pixels if height_pixels > 0 else 0
+            # Нормализуем расстояние: 1 метр при высоте 1/3 экрана, умножаем на 2 для соответствия реальной дистанции
+            distance = 2 * (frame_height / 3) / height_pixels if height_pixels > 0 else 0
             
             # Простой расчет скорости
             if self.last_position:
                 dx = pixel_x - self.last_position[0]
                 dy = pixel_y - self.last_position[1]
-                speed = (dx * dx + dy * dy) ** 0.5 / 100  # Нормализуем скорость
+                # Нормализуем скорость: 1 м/с при движении на 1/10 экрана в секунду
+                speed = (dx * dx + dy * dy) ** 0.5 / (frame_width / 10)
                 direction = math.atan2(dy, dx)
             else:
                 speed = 0.0
@@ -934,6 +934,12 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
         results = holistic.process(rgb_frame)
         perf_monitor.stop('detection')
         
+        # Добавляем отладочную информацию
+        if results.pose_landmarks:
+            print("MediaPipe detected pose landmarks")
+        else:
+            print("No pose landmarks detected")
+        
         # Список для хранения всех найденных объектов
         detected_objects = []
         target_x, target_y, target_distance, speed, direction = None, None, None, 0.0, 0.0
@@ -961,6 +967,7 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                         2
                     )
                 })
+                print(f"Added body object with target position: ({target_x}, {target_y})")
                 
             except Exception as e:
                 print(f"Error processing pose landmarks: {str(e)}")
