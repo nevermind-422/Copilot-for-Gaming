@@ -558,6 +558,16 @@ class OverlayWindow:
                     angle_text = f"Angle: {math.degrees(angle):.1f}°"
                     self.save_dc.TextOut(int(target_pos[0] + 10), int(target_pos[1]), speed_text)
                     self.save_dc.TextOut(int(target_pos[0] + 10), int(target_pos[1] + 20), angle_text)
+                    
+                    # Добавляем информацию о расстоянии и статусе W
+                    w_status = "W: PRESSED" if cursor_controller.w_key_pressed else "W: RELEASED"
+                    distance_text = f"Distance: {cursor_controller.last_distance:.2f}m"
+                    movement_status = "MOVING" if cursor_controller.w_key_pressed else "STOPPED"
+                    
+                    self.save_dc.SetTextColor(cursor_controller.w_key_pressed and 0x0000FF or 0x00FF00)
+                    self.save_dc.TextOut(int(target_pos[0] + 10), int(target_pos[1] + 40), w_status)
+                    self.save_dc.TextOut(int(target_pos[0] + 10), int(target_pos[1] + 60), distance_text)
+                    self.save_dc.TextOut(int(target_pos[0] + 10), int(target_pos[1] + 80), movement_status)
             
             # Обновляем историю позиций
             self.last_cursor_pos = current_pos
@@ -580,6 +590,54 @@ class OverlayWindow:
                 self.draw_mode_status(cursor_controller)
                 self.draw_attack_status(cursor_controller)
                 self.draw_movement_debug(cursor_controller)  # Добавляем отрисовку отладки движения
+                
+                # Добавляем статус информации про клавишу W и расстояние
+                try:
+                    # Позиция и размеры блока информации
+                    info_width = 300
+                    info_height = 120
+                    info_x = 570  # Та же x-координата, что и у других кнопок
+                    info_y = 210  # Располагаем под кнопками статуса
+                    
+                    # Цвета для блока
+                    bg_color = 0x404040  # Серый фон
+                    text_color = 0xFFFFFF  # Белый текст
+                    highlight_color = 0x00FF00  # Зеленый для выделения
+                    warning_color = 0x0000FF  # Красный для предупреждений
+                    
+                    # Рисуем фон блока
+                    brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
+                    self.save_dc.SelectObject(brush)
+                    self.save_dc.Rectangle((info_x, info_y, info_x + info_width, info_y + info_height))
+                    
+                    # Рисуем рамку блока
+                    pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0xFFFFFF)  # Белая рамка
+                    self.save_dc.SelectObject(pen)
+                    self.save_dc.Rectangle((info_x, info_y, info_x + info_width, info_y + info_height))
+                    
+                    # Рисуем заголовок
+                    self.save_dc.SetTextColor(text_color)
+                    self.save_dc.TextOut(info_x + 10, info_y + 10, "MOVEMENT STATUS")
+                    
+                    # Рисуем информацию о статусе клавиши W
+                    w_status = "PRESSED" if cursor_controller.w_key_pressed else "RELEASED"
+                    w_color = warning_color if cursor_controller.w_key_pressed else highlight_color
+                    self.save_dc.SetTextColor(w_color)
+                    self.save_dc.TextOut(info_x + 10, info_y + 40, f"W Key: {w_status}")
+                    
+                    # Рисуем информацию о расстоянии
+                    distance_color = warning_color if cursor_controller.last_distance > 2.0 else highlight_color
+                    self.save_dc.SetTextColor(distance_color)
+                    self.save_dc.TextOut(info_x + 10, info_y + 70, f"Distance: {cursor_controller.last_distance:.2f}m")
+                    
+                    # Рисуем статус движения
+                    movement_status = "MOVING FORWARD" if cursor_controller.w_key_pressed else "STOPPED"
+                    movement_color = warning_color if cursor_controller.w_key_pressed else highlight_color
+                    self.save_dc.SetTextColor(movement_color)
+                    self.save_dc.TextOut(info_x + 10, info_y + 100, f"Status: {movement_status}")
+                    
+                except Exception as e:
+                    print(f"Error drawing movement status: {str(e)}")
             
             if detected_objects:
                 for obj in detected_objects:
@@ -606,6 +664,14 @@ class OverlayWindow:
             self.save_dc.TextOut(110, 110, speed_str)
             self.save_dc.TextOut(110, 130, angle_str)
             
+            # Добавляем статусы W и движения
+            if cursor_controller:
+                self.save_dc.SetTextColor(cursor_controller.w_key_pressed and 0x0000FF or 0x00FF00)
+                self.save_dc.TextOut(110, 150, f"W Key: {cursor_controller.w_key_pressed and 'PRESSED' or 'RELEASED'}")
+                self.save_dc.TextOut(110, 170, f"Last Distance: {cursor_controller.last_distance:.2f}m")
+                threshold_text = f"Thresholds: Press>{2.1}m, Release<{1.9}m"
+                self.save_dc.TextOut(110, 190, threshold_text)
+            
             # Счетчики производительности
             if perf_stats:
                 self.save_dc.SetTextColor(0x00FF00)
@@ -628,7 +694,7 @@ class OverlayWindow:
                     text += f"{short_name:<12} {current_ms:>8.1f} {avg_ms:>8.1f}\n"
                 self.save_dc.DrawText(
                     text,
-                    (110, 170, 460, 490),
+                    (110, 210, 460, 490),
                     win32con.DT_LEFT | win32con.DT_TOP
                 )
             self.mfc_dc.BitBlt(
@@ -733,34 +799,76 @@ class CursorController:
         self.kalman_x_max = KalmanFilter(process_variance=0.0005, measurement_variance=0.2)
         self.kalman_y_max = KalmanFilter(process_variance=0.0005, measurement_variance=0.2)
         self.filtered_box = None
-
+        
+        # Параметры движения вперед
+        self.w_key_pressed = False
+        self.manual_key_pressed = False  # Флаг для отслеживания ручного нажатия клавиши W
+        self.distance_filter = KalmanFilter(process_variance=0.003, measurement_variance=0.05)  # Увеличиваем process_variance и уменьшаем measurement_variance для более быстрой реакции
+        self.last_distance_check_time = 0
+        self.distance_check_interval = 0.05  # Уменьшаем интервал проверки до 50 мс для более быстрой реакции
+        self.distance_threshold = 2.0  # Порог в метрах
+        self.target_lost_timeout = 0.3  # Уменьшаем время до признания цели потерянной
+        
+        # Добавляем атрибут для отслеживания последнего расстояния
+        self.last_distance = 0.0
+    
     def calculate_3d_position(self, landmarks, screen_width, screen_height):
         """Вычисляет экранную позицию цели и примерное расстояние в метрах
-            на основе угла обзора и размера плеч в кадре."""
-        # Параметры для расчёта
-        REAL_SHOULDER_WIDTH = 0.4          # метры, средняя ширина плеч человека
-        HFOV = math.radians(60)            # горизонтальный УО камеры (рад)
-
-        # экранные пиксели плеч
+           на основе размера рамки с учетом законов перспективы"""
+        # Получаем экранные координаты плеч для центра цели
         lmk = landmarks.landmark
         x1, y1 = int(lmk[mp_holistic.PoseLandmark.LEFT_SHOULDER].x * screen_width), \
                  int(lmk[mp_holistic.PoseLandmark.LEFT_SHOULDER].y * screen_height)
         x2, y2 = int(lmk[mp_holistic.PoseLandmark.RIGHT_SHOULDER].x * screen_width), \
                  int(lmk[mp_holistic.PoseLandmark.RIGHT_SHOULDER].y * screen_height)
 
-        # центр цели
+        # Центр цели
         target_x = (x1 + x2) // 2
         target_y = (y1 + y2) // 2
 
-        # ширина плеч в пикселях
-        pixel_width = math.hypot(x2 - x1, y2 - y1)
-        if pixel_width > 0:
-            f_px = (screen_width / 2) / math.tan(HFOV / 2)
-            distance = (REAL_SHOULDER_WIDTH * f_px) / pixel_width
-        else:
-            distance = 0.0
-
-        # скорость пикселей/сек и направление (рад)
+        # Находим крайние точки тела для расчета общего размера рамки
+        min_x = min_y = float('inf')
+        max_x = max_y = float('-inf')
+        
+        for landmark in landmarks.landmark:
+            x = int(landmark.x * screen_width)
+            y = int(landmark.y * screen_height)
+            min_x = min(min_x, x)
+            min_y = min(min_y, y)
+            max_x = max(max_x, x)
+            max_y = max(max_y, y)
+        
+        # Размеры рамки тела в пикселях
+        box_width = max_x - min_x
+        box_height = max_y - min_y
+        
+        # Вычисляем площадь рамки
+        box_area = box_width * box_height
+        screen_area = screen_width * screen_height
+        
+        # Отношение площади рамки к площади экрана
+        area_ratio = box_area / screen_area
+        
+        # Защита от деления на ноль или очень маленькие значения
+        if area_ratio < 0.0001:
+            area_ratio = 0.0001
+        
+        # Константы для калибровки
+        CALIBRATION_AREA = 1/9  # 1/3 * 1/3 экрана по площади = 1 метр
+        
+        # По законам перспективы, площадь объекта обратно пропорциональна
+        # квадрату расстояния, поэтому используем квадратный корень
+        # для восстановления линейной зависимости
+        distance = math.sqrt(CALIBRATION_AREA / area_ratio)
+        
+        # Ограничение максимального значения расстояния
+        distance = min(distance, 10.0)
+        
+        # Улучшенная диагностика
+        print(f"Box size: {box_width}x{box_height} pixels, Area ratio: {area_ratio:.6f}")
+        print(f"Calculated distance: {distance:.2f} meters")
+        
+        # Рассчитываем скорость и направление движения
         now = time.time()
         if not hasattr(self, 'last_pixel_pos'):
             self.last_pixel_pos = (target_x, target_y)
@@ -780,7 +888,7 @@ class CursorController:
                 direction = 0.0
 
         return target_x, target_y, distance, speed, direction
-        
+
     def toggle_following(self):
         """Переключает режим следования за целью"""
         self.following_enabled = not self.following_enabled
@@ -810,37 +918,125 @@ class CursorController:
                 self.attack_interval = random.uniform(0.1, 0.3)
                 
     def handle_auto_movement(self, distance, box):
-        """Обрабатывает автоматическое движение курсора с применением фильтра Калмана"""
-        if not self.following_enabled or not box:
+        """Обрабатывает автоматическое движение курсора и управление движением с клавишей W"""
+        current_time = time.time()
+        
+        # ВАЖНАЯ МОДИФИКАЦИЯ: Не проверяем нажатие клавиши W вручную,
+        # чтобы не мешать пользователю управлять движением самостоятельно
+        
+        # Сохраняем расстояние для отображения в любом случае
+        if distance is not None and distance > 0:
+            self.last_distance = distance
+        
+        # Проверка на потерю цели
+        if not box:
+            print(f"No box detected - target lost (w_key_pressed={self.w_key_pressed})")
+            # Не отпускаем клавишу W автоматически - пусть пользователь сам управляет
+            # Только автоматически нажатую клавишу отпускаем
+            if self.w_key_pressed and self.following_enabled and not self.manual_key_pressed:
+                try:
+                    print("Releasing W key due to target loss")
+                    keyboard.release('w')
+                    self.w_key_pressed = False
+                    # Имитируем небольшую паузу для более быстрой остановки
+                    time.sleep(0.01)
+                except Exception as e:
+                    print(f"Error releasing W key: {e}")
             return
-            
+        
+        # Проверка валидности расстояния
+        if distance is None or distance <= 0:
+            print(f"Invalid distance value: {distance}")
+            # Не отпускаем клавишу W автоматически - пусть пользователь сам управляет
+            return
+        
+        # Применяем фильтр Калмана к координатам рамки
         min_x, min_y, max_x, max_y = box
         
-        # Применяем фильтр Калмана к каждой координате рамки
         filtered_min_x = self.kalman_x_min.update(min_x)
         filtered_min_y = self.kalman_y_min.update(min_y)
         filtered_max_x = self.kalman_x_max.update(max_x)
         filtered_max_y = self.kalman_y_max.update(max_y)
         
-        # Округляем до целых значений
+        # Округляем до целых
         filtered_min_x = int(filtered_min_x)
         filtered_min_y = int(filtered_min_y)
         filtered_max_x = int(filtered_max_x)
         filtered_max_y = int(filtered_max_y)
         
-        # Сохраняем отфильтрованную рамку
+        # Сохраняем отфильтрованные данные
         self.filtered_box = (filtered_min_x, filtered_min_y, filtered_max_x, filtered_max_y)
+        self.last_box = self.filtered_box
         
-        # Используем отфильтрованные координаты для центра
+        # Центр цели
         target_x = (filtered_min_x + filtered_max_x) // 2
         target_y = (filtered_min_y + filtered_max_y) // 2
         
-        # Диагностика - вывести информацию о рамках
-        print(f"Raw Box: ({min_x}, {min_y}) - ({max_x}, {max_y})")
-        print(f"Filtered Box: ({filtered_min_x}, {filtered_min_y}) - ({filtered_max_x}, {filtered_max_y})")
-        print(f"Target: ({target_x}, {target_y})")
+        # Применяем фильтр к расстоянию для сглаживания колебаний
+        filtered_distance = self.distance_filter.update(distance)
         
-        # Используем отфильтрованные координаты для позиционирования
+        # Сохраняем отфильтрованное расстояние для отображения в оверлее
+        self.last_distance = filtered_distance
+        
+        # Быстрая проверка - если расстояние меньше порога, немедленно отпускаем клавишу W
+        # Это обеспечит более быструю реакцию при остановке
+        if self.w_key_pressed and not self.manual_key_pressed and self.following_enabled and filtered_distance < 1.9:
+            try:
+                print(f"Quick stop: Distance {filtered_distance:.2f}m < threshold 1.9m - IMMEDIATELY RELEASING W key")
+                keyboard.release('w')
+                self.w_key_pressed = False
+                # Когда быстро остановились, возвращаемся
+                return
+            except Exception as e:
+                print(f"Error in quick stop release: {e}")
+        
+        # Управляем движением вперед только если режим Following включен
+        if self.following_enabled:
+            # Проверка, не нажата ли клавиша W пользователем вручную
+            try:
+                # Если пользователь сам нажал W - не вмешиваемся в управление
+                manual_w_pressed = keyboard.is_pressed('w')
+                if manual_w_pressed and not self.w_key_pressed:
+                    self.manual_key_pressed = True
+                    print("Manual W key press detected - Auto mode temporarily disabled")
+                    # Не будем управлять W пока пользователь не отпустит клавишу
+                    return
+                if not manual_w_pressed and self.manual_key_pressed:
+                    self.manual_key_pressed = False
+                    print("Manual W key released - Auto mode re-enabled")
+            except:
+                pass
+            
+            # Если это не ручной режим - применяем автоматическое управление
+            if not self.manual_key_pressed:
+                release_threshold = 1.9  # Порог отпускания клавиши (повысили до 1.9 метра)
+                press_threshold = 2.1    # Порог нажатия клавиши (повысили до 2.1 метра)
+                
+                if not self.w_key_pressed and filtered_distance > press_threshold:
+                    try:
+                        print(f"Distance > {press_threshold}m ({filtered_distance:.2f}m) - PRESSING W key")
+                        keyboard.press('w')
+                        self.w_key_pressed = True
+                    except Exception as e:
+                        print(f"Error pressing W key: {e}")
+                elif self.w_key_pressed and filtered_distance < release_threshold:
+                    try:
+                        print(f"Distance <= {release_threshold}m ({filtered_distance:.2f}m) - RELEASING W key")
+                        keyboard.release('w')
+                        self.w_key_pressed = False
+                    except Exception as e:
+                        print(f"Error releasing W key: {e}")
+        else:
+            # Режим Following отключен - отпускаем только если мы сами нажимали
+            if self.w_key_pressed and not self.manual_key_pressed:
+                try:
+                    print("Following disabled - stopping movement")
+                    keyboard.release('w')
+                    self.w_key_pressed = False
+                except Exception as e:
+                    print(f"Error releasing W key: {e}")
+        
+        # Устанавливаем целевую позицию курсора
         self.move_cursor(target_x, target_y)
     
     def _update_loop(self):
@@ -1022,10 +1218,35 @@ class CursorController:
             return win32api.GetCursorPos()
     
     def cleanup(self):
-        """Очистка ресурсов при завершении"""
+        """Очистка ресурсов при завершении, гарантирует отпускание всех клавиш"""
+        print("Running CursorController cleanup...")
+        # Отпускаем клавишу W, если она была зажата
+        if hasattr(self, 'w_key_pressed') and self.w_key_pressed:
+            try:
+                print("Cleanup: Releasing W key")
+                keyboard.release('w')
+                time.sleep(0.02)  # Небольшая задержка для обработки
+                
+                # Двойная проверка отпускания
+                if keyboard.is_pressed('w'):
+                    print("W key still pressed after release! Trying again...")
+                    keyboard.release('w')
+                    time.sleep(0.02)
+            except Exception as e:
+                print(f"Error releasing W key during cleanup: {e}")
+            
+            self.w_key_pressed = False
+        
+        # Останавливаем поток обновления
         self.running = False
-        if self.update_thread.is_alive():
-            self.update_thread.join(timeout=1.0)
+        if hasattr(self, 'update_thread') and self.update_thread and self.update_thread.is_alive():
+            try:
+                self.update_thread.join(timeout=1.0)
+                print("Update thread stopped")
+            except Exception as e:
+                print(f"Error stopping update thread: {e}")
+        
+        print("CursorController cleanup completed")
     
     def __del__(self):
         self.cleanup()
@@ -1337,53 +1558,46 @@ def capture_screen():
 
 def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
     try:
-        print("Starting process_frame...")
+        # Минимизируем логирование для лучшей производительности
+        #print("Starting process_frame...")
         
         if frame is None or frame.size == 0:
             print("Error: Invalid frame")
+            # Обязательно вызовем handle_auto_movement с box=None
+            cursor_controller.handle_auto_movement(None, None)
             return None, None, None, 0.0, 0.0, []
             
         perf_monitor.start('process')
-        print("Process timer started")
         
         # Получаем размеры экрана
         screen_width = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
         screen_height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
-        print(f"Screen dimensions: {screen_width}x{screen_height}")
-        print(f"Frame dimensions: {frame.shape[1]}x{frame.shape[0]}")
         
         # Конвертируем в RGB для MediaPipe
-        print("Converting frame to RGB...")
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        print("Frame converted to RGB")
-        print(f"RGB frame dimensions: {rgb_frame.shape[1]}x{rgb_frame.shape[0]}")
         
         # Получаем результаты от MediaPipe
-        print("Processing with MediaPipe...")
         perf_monitor.start('detection')
         results = holistic.process(rgb_frame)
         perf_monitor.stop('detection')
-        print("MediaPipe processing completed")
         
         # Список для хранения всех найденных объектов
         detected_objects = []
         target_x, target_y, target_distance, speed, direction = None, None, None, 0.0, 0.0
+        box = None  # Инициализируем box как None
         
         # Обрабатываем результаты распознавания
         if results.pose_landmarks:
-            print("Pose landmarks detected")
+            #print("Pose landmarks detected")
             try:
                 # Получаем 3D позицию цели
-                print("Calculating 3D position by FOV+size...")
                 target_x, target_y, target_distance, speed, direction = cursor_controller.calculate_3d_position(
                     results.pose_landmarks,
                     screen_width,
                     screen_height
                 )
-                print(f"3D position calculated: ({target_x}, {target_y}, {target_distance:.2f} m)")
                 
                 # Создаем рамку для объекта
-                print("Drawing bounding box...")
                 box = DrawingUtils.draw_bounding_box(
                     frame,
                     results.pose_landmarks,
@@ -1391,7 +1605,6 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                     20,
                     2
                 )
-                print("Bounding box drawn")
                 
                 # Сохраняем рамку в контроллере
                 cursor_controller.last_box = box
@@ -1403,30 +1616,26 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                     'color': (0, 255, 0),
                     'box': box
                 })
-                
-                # Управляем автоматическим движением
-                print("Handling auto movement...")
-                cursor_controller.handle_auto_movement(target_distance, box)
-                print("Auto movement handled")
-                
             except Exception as e:
                 print(f"Error processing pose landmarks: {str(e)}")
                 import traceback
                 traceback.print_exc()
+                box = None  # Сбрасываем box при ошибке
         else:
-            print("No pose landmarks detected")
+            #print("No pose landmarks detected")
             cursor_controller.last_box = None
+            box = None
         
-        # Перемещаем курсор к цели
+        # Важно: всегда вызываем handle_auto_movement, передавая текущее расстояние и box (или None)
+        cursor_controller.handle_auto_movement(target_distance, box)
+        
+        # Перемещаем курсор к цели, только если найдены ландмарки
         if target_x is not None and target_y is not None:
-            print("Moving cursor...")
             perf_monitor.start('cursor')
             cursor_x, cursor_y = cursor_controller.move_cursor(target_x, target_y)
             perf_monitor.stop('cursor')
-            print(f"Cursor moved to ({cursor_x}, {cursor_y})")
             
             # Рисуем только необходимые элементы
-            print("Drawing debug elements...")
             perf_monitor.start('drawing')
             # Рисуем рамку вокруг тела
             if detected_objects and detected_objects[0]['box']:
@@ -1457,21 +1666,15 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                         tipLength=0.2
                     )
             perf_monitor.stop('drawing')
-            print("Debug elements drawn")
         
         # Показываем результат в отдельном окне
         try:
-            print("Showing debug window...")
             cv2.imshow('Debug View', frame)
             cv2.waitKey(1)
-            print("Debug window shown")
         except Exception as e:
             print(f"Error showing debug window: {str(e)}")
-            import traceback
-            traceback.print_exc()
         
         perf_monitor.stop('process')
-        print("Process frame completed successfully")
         return target_x, target_y, target_distance, speed, direction, detected_objects
         
     except Exception as e:
@@ -1479,6 +1682,8 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
         import traceback
         traceback.print_exc()
         perf_monitor.stop('process')
+        # Гарантируем вызов handle_auto_movement даже при ошибке
+        cursor_controller.handle_auto_movement(None, None)
         return None, None, None, 0.0, 0.0, []
 
 def main():
