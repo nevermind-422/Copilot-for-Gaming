@@ -17,6 +17,7 @@ import sys
 import logging
 from absl import logging as absl_logging
 import random
+from threading import Thread
 
 # Настраиваем логирование
 logging.basicConfig(level=logging.INFO)
@@ -159,6 +160,11 @@ class OverlayWindow:
         # Цвета для индикации состояния
         self.following_color = 0x00FF00  # Зеленый для активного состояния
         self.following_disabled_color = 0xFF0000  # Красный для неактивного состояния
+        
+        # Добавляем новые параметры для отрисовки движения
+        self.last_cursor_pos = None
+        self.last_target_pos = None
+        self.movement_history = deque(maxlen=10)
 
     def draw_skeleton(self, landmarks, color):
         """Рисует скелет с помощью линий и точек"""
@@ -510,6 +516,56 @@ class OverlayWindow:
         except Exception as e:
             print(f"Error drawing attack status: {str(e)}")
 
+    def draw_movement_debug(self, cursor_controller):
+        """Отрисовка отладочной информации о движении"""
+        try:
+            current_pos = win32api.GetCursorPos()
+            target_pos = (cursor_controller.target_x, cursor_controller.target_y)
+            
+            # Рисуем вектор движения
+            if current_pos and target_pos:
+                dx = target_pos[0] - current_pos[0]
+                dy = target_pos[1] - current_pos[1]
+                distance = (dx**2 + dy**2)**0.5
+                
+                if distance > 10:  # Минимальный порог для отрисовки
+                    # Рисуем линию движения
+                    pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0x0000FF)
+                    self.save_dc.SelectObject(pen)
+                    self.save_dc.MoveTo((int(current_pos[0]), int(current_pos[1])))
+                    self.save_dc.LineTo((int(target_pos[0]), int(target_pos[1])))
+                    
+                    # Рисуем стрелку
+                    arrow_size = 10
+                    angle = math.atan2(dy, dx)
+                    arrow_angle = math.pi / 6
+                    
+                    # Первая часть наконечника
+                    ax = target_pos[0] - arrow_size * math.cos(angle + arrow_angle)
+                    ay = target_pos[1] - arrow_size * math.sin(angle + arrow_angle)
+                    self.save_dc.MoveTo((int(target_pos[0]), int(target_pos[1])))
+                    self.save_dc.LineTo((int(ax), int(ay)))
+                    
+                    # Вторая часть наконечника
+                    ax = target_pos[0] - arrow_size * math.cos(angle - arrow_angle)
+                    ay = target_pos[1] - arrow_size * math.sin(angle - arrow_angle)
+                    self.save_dc.MoveTo((int(target_pos[0]), int(target_pos[1])))
+                    self.save_dc.LineTo((int(ax), int(ay)))
+                    
+                    # Рисуем информацию о движении
+                    self.save_dc.SetTextColor(0x00FF00)
+                    speed_text = f"Speed: {distance:.1f}px"
+                    angle_text = f"Angle: {math.degrees(angle):.1f}°"
+                    self.save_dc.TextOut(int(target_pos[0] + 10), int(target_pos[1]), speed_text)
+                    self.save_dc.TextOut(int(target_pos[0] + 10), int(target_pos[1] + 20), angle_text)
+            
+            # Обновляем историю позиций
+            self.last_cursor_pos = current_pos
+            self.last_target_pos = target_pos
+            
+        except Exception as e:
+            print(f"Error in draw_movement_debug: {str(e)}")
+
     def update_info(self, cursor_pos, target_pos, distance, movement, detected_objects=None, fps=0, perf_stats=None, speed=0, direction=0, cursor_controller=None):
         current_time = time.time()
         if current_time - self.last_update_time < self.update_interval:
@@ -523,7 +579,7 @@ class OverlayWindow:
                 self.draw_following_status(cursor_controller)
                 self.draw_mode_status(cursor_controller)
                 self.draw_attack_status(cursor_controller)
-                cursor_controller.handle_attack()  # Обработка атак
+                self.draw_movement_debug(cursor_controller)  # Добавляем отрисовку отладки движения
             
             if detected_objects:
                 for obj in detected_objects:
@@ -533,19 +589,16 @@ class OverlayWindow:
                         if 'box' in obj:
                             self.draw_bounding_box(obj['box'], obj['color'])
             
-            if cursor_pos and target_pos and movement:
-                self.draw_movement_vector(cursor_pos, target_pos, speed, direction)
-            
             self.save_dc.SelectObject(self.font)
             
             # Серый фон для всей отладочной информации
             self.save_dc.FillSolidRect((100, 60, 450, 520), 0x404040)  # Увеличена высота на 30 пикселей
             
             # FPS, Distance, Speed, Movement Angle
-            fps_str = f"FPS: {fps:.1f}"
-            distance_str = f"Distance: {distance:.2f}m" if distance is not None else "Distance: ---"
-            speed_str = f"Speed: {speed:.2f} m/s" if speed is not None else "Speed: ---"
-            angle_str = f"Movement Angle: {math.degrees(direction):.1f}°" if direction is not None and speed >= 0.1 else "Movement Angle: ---"
+            fps_str   = f"FPS: {fps:.1f}"
+            distance_str = f"Distance: {distance:.2f} m" if distance is not None else "Distance: ---"
+            speed_str    = f"Speed:    {speed:.2f} m/s" if speed is not None else "Speed: ---"
+            angle_str     = f"Movement Angle: {math.degrees(direction):.1f}°" if direction is not None and speed >= 0.1 else "Movement Angle: ---"
             
             self.save_dc.SetTextColor(0x00FF00)
             self.save_dc.TextOut(110, 70, fps_str)
@@ -617,261 +670,312 @@ class OverlayWindow:
 
 class CursorController:
     def __init__(self):
+        # Системные параметры
+        self.screen_width = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
+        self.screen_height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
+        self.center_x = self.screen_width // 2
+        self.center_y = self.screen_height // 2
+        
+        # Параметры движения
+        self.current_x, self.current_y = win32api.GetCursorPos()
+        self.target_x = self.current_x
+        self.target_y = self.current_y
         self.relative_mode = False
-        self.sensitivity = 0.075  # Уменьшена чувствительность в два раза (было 0.15)
-        self.center_x = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN) // 2
-        self.center_y = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN) // 2
-        self.last_mode_switch_time = 0
-        self.last_position = None
-        
-        # Параметры для абсолютного режима
         self.smoothing_factor = 0.3
-        self.min_distance = 5
-        self.max_speed = 20
+        self.sensitivity = 1.0
+        self.min_distance = 0.5  # Уменьшаем минимальное расстояние для большей точности
+        self.max_speed = 100
+        self.move_history = deque(maxlen=5)
         
-        # Параметры для сглаживания в относительном режиме
-        self.move_history = deque(maxlen=3)  # История последних движений
-        self.max_move = 15  # Уменьшено максимальное смещение за один кадр (было 30)
+        # Параметры высокочастотного обновления
+        self.update_interval = 1/500  # 500 Hz
+        self.running = True
+        self.update_thread = Thread(target=self._update_loop, daemon=True)
+        self.update_thread.start()
         
-        # Параметры для автоматического движения
-        self.is_moving = False
-        self.target_distance = 2.0  # Целевая дистанция в метрах
-        self.movement_threshold = 0.1  # Порог для начала движения
-        self.following_enabled = True  # Состояние следования за целью
-        
-        # Параметры для режима атаки
+        # Параметры состояния
+        self.following_enabled = True
         self.attack_enabled = False
-        self.last_key1_time = 0
-        self.last_mouse1_time = 0
-        self.key1_interval = random.uniform(2.0, 4.0)  # Интервал для клавиши 1
-        self.mouse1_interval = random.uniform(0.5, 0.7)  # Интервал для Mouse1
-        self.last_box = None  # Последняя известная рамка
-        self.last_distance = None  # Последнее известное расстояние
+        self.last_attack_time = 0
+        self.attack_interval = random.uniform(0.1, 0.3)  # Случайный интервал между кликами
+        self.last_position = None
+        self.last_box = None
+        
+    def calculate_3d_position(self, landmarks, screen_width, screen_height):
+        """Вычисляет экранную позицию цели и примерное расстояние в метрах
+            на основе угла обзора и размера плеч в кадре."""
+        # Параметры для расчёта
+        REAL_SHOULDER_WIDTH = 0.4          # метры, средняя ширина плеч человека
+        HFOV = math.radians(60)            # горизонтальный УО камеры (рад)
 
-    def is_crosshair_in_box(self, box):
-        """Проверяет, находится ли прицел внутри рамки"""
-        if not box:
-            return False
-        min_x, min_y, max_x, max_y = box
-        return (min_x <= self.center_x <= max_x and 
-                min_y <= self.center_y <= max_y)
+        # экранные пиксели плеч
+        lmk = landmarks.landmark
+        x1, y1 = int(lmk[mp_holistic.PoseLandmark.LEFT_SHOULDER].x * screen_width), \
+                 int(lmk[mp_holistic.PoseLandmark.LEFT_SHOULDER].y * screen_height)
+        x2, y2 = int(lmk[mp_holistic.PoseLandmark.RIGHT_SHOULDER].x * screen_width), \
+                 int(lmk[mp_holistic.PoseLandmark.RIGHT_SHOULDER].y * screen_height)
 
-    def handle_auto_movement(self, distance, box):
-        """Управляет автоматическим движением к цели"""
-        if not box or not self.following_enabled:
-            if self.is_moving:
-                keyboard.release('w')
-                self.is_moving = False
-            return
+        # центр цели
+        target_x = (x1 + x2) // 2
+        target_y = (y1 + y2) // 2
 
-        # Проверяем, находится ли прицел в рамке
-        if self.is_crosshair_in_box(box):
-            if distance > self.target_distance + self.movement_threshold:
-                # Если дистанция больше целевой, начинаем движение
-                if not self.is_moving:
-                    keyboard.press('w')
-                    self.is_moving = True
-            elif distance < self.target_distance - self.movement_threshold:
-                # Если дистанция меньше целевой, останавливаемся
-                if self.is_moving:
-                    keyboard.release('w')
-                    self.is_moving = False
+        # ширина плеч в пикселях
+        pixel_width = math.hypot(x2 - x1, y2 - y1)
+        if pixel_width > 0:
+            f_px = (screen_width / 2) / math.tan(HFOV / 2)
+            distance = (REAL_SHOULDER_WIDTH * f_px) / pixel_width
         else:
-            # Если прицел не в рамке, останавливаемся
-            if self.is_moving:
-                keyboard.release('w')
-                self.is_moving = False
+            distance = 0.0
 
-    def toggle_mode(self):
-        """Toggle between absolute and relative mouse movement modes"""
-        current_time = time.time()
-        if current_time - self.last_mode_switch_time >= 0.5:  # Предотвращаем частое переключение
-            self.relative_mode = not self.relative_mode
-            self.last_mode_switch_time = current_time
-            print(f"Switched to {'RELATIVE' if self.relative_mode else 'ABSOLUTE'} mode")
-            
-            if self.relative_mode:
-                # Центрируем курсор при переходе в относительный режим
-                win32api.SetCursorPos((self.center_x, self.center_y))
-                self.last_position = (self.center_x, self.center_y)
-            return True
-        return False
-
-    def toggle_following(self):
-        """Переключает состояние следования за целью"""
-        current_time = time.time()
-        if current_time - self.last_mode_switch_time >= 0.5:  # Предотвращаем частое переключение
-            self.following_enabled = not self.following_enabled
-            self.last_mode_switch_time = current_time
-            print(f"Following {'ENABLED' if self.following_enabled else 'DISABLED'}")
-            return True
-        return False
-
-    def toggle_attack(self):
-        """Переключает режим атаки"""
-        current_time = time.time()
-        if current_time - self.last_mode_switch_time >= 0.5:  # Предотвращаем частое переключение
-            self.attack_enabled = not self.attack_enabled
-            self.last_mode_switch_time = current_time
-            if self.attack_enabled:
-                self.last_key1_time = current_time
-                self.key1_interval = random.uniform(2.0, 4.0)  # Новый случайный интервал
-            print(f"Attack mode {'ENABLED' if self.attack_enabled else 'DISABLED'}")
-            return True
-        return False
-
-    def handle_attack(self):
-        """Управляет комбинированной атакой"""
-        if not self.attack_enabled:
-            return
-
-        current_time = time.time()
-        
-        # Обработка нажатия клавиши 1
-        if current_time - self.last_key1_time >= self.key1_interval:
-            try:
-                keyboard.press('1')
-                time.sleep(0.1)  # Короткая задержка для надежности
-                keyboard.release('1')
-                self.last_key1_time = current_time
-                self.key1_interval = random.uniform(2.0, 4.0)  # Новый случайный интервал
-            except Exception as e:
-                print(f"Error in key1 press: {str(e)}")
-        
-        # Обработка нажатия Mouse1 только если прицел в рамке и расстояние подходящее
-        if current_time - self.last_mouse1_time >= self.mouse1_interval:
-            try:
-                # Проверяем, находится ли прицел в рамке и расстояние
-                if hasattr(self, 'last_box') and self.last_box and self.last_distance is not None:
-                    if self.is_crosshair_in_box(self.last_box) and self.last_distance <= 20.0:
-                        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                        time.sleep(0.05)  # Короткая задержка
-                        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                        self.last_mouse1_time = current_time
-                        self.mouse1_interval = random.uniform(0.5, 0.7)  # Новый случайный интервал
-            except Exception as e:
-                print(f"Error in mouse1 click: {str(e)}")
-
-    def move_cursor(self, target_x, target_y):
-        try:
-            if self.relative_mode:
-                # Вычисляем смещение относительно центра экрана
-                dx = target_x - self.center_x
-                dy = target_y - self.center_y
-                
-                # Применяем чувствительность
-                move_x = dx * self.sensitivity
-                move_y = dy * self.sensitivity
-                
-                # Ограничиваем максимальное смещение за кадр
-                move_x = max(min(move_x, self.max_move), -self.max_move)
-                move_y = max(min(move_y, self.max_move), -self.max_move)
-                
-                # Добавляем текущее движение в историю
-                self.move_history.append((move_x, move_y))
-                
-                # Вычисляем сглаженное движение как среднее по истории
-                if len(self.move_history) > 0:
-                    smooth_x = sum(x for x, _ in self.move_history) / len(self.move_history)
-                    smooth_y = sum(y for _, y in self.move_history) / len(self.move_history)
-                    
-                    # Применяем сглаженное движение только если оно достаточно большое
-                    if abs(smooth_x) > 0.1 or abs(smooth_y) > 0.1:
-                        win32api.mouse_event(
-                            win32con.MOUSEEVENTF_MOVE,
-                            int(smooth_x),
-                            int(smooth_y),
-                            0, 0
-                        )
-                
-                return self.center_x, self.center_y
-            else:
-                # Стандартный режим абсолютного позиционирования
-                current_x, current_y = win32api.GetCursorPos()
-                dx = target_x - current_x
-                dy = target_y - current_y
-                distance = (dx**2 + dy**2)**0.5
-                
-                if distance < self.min_distance:
-                    return current_x, current_y
-                    
-                if distance > self.max_speed:
-                    scale = self.max_speed / distance
-                    dx *= scale
-                    dy *= scale
-                    
-                move_x = int(dx * self.smoothing_factor)
-                move_y = int(dy * self.smoothing_factor)
-                
-                screen_width = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
-                screen_height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
-                new_x = max(0, min(current_x + move_x, screen_width - 1))
-                new_y = max(0, min(current_y + move_y, screen_height - 1))
-                
-                win32api.SetCursorPos((new_x, new_y))
-                return new_x, new_y
-                
-        except Exception as e:
-            print(f"Error in move_cursor: {str(e)}")
-            current_x, current_y = win32api.GetCursorPos()
-            return current_x, current_y
-
-    def calculate_3d_position(self, landmarks, frame_width, frame_height):
-        """Вычисляет позицию цели на основе ключевых точек"""
-        if not landmarks:
-            return None, None, None, 0.0, 0.0
-            
-        try:
-            # Получаем координаты центра тела (между плечами)
-            left_shoulder = landmarks.landmark[mp_holistic.PoseLandmark.LEFT_SHOULDER]
-            right_shoulder = landmarks.landmark[mp_holistic.PoseLandmark.RIGHT_SHOULDER]
-            
-            # Вычисляем центр между плечами
-            center_x = (left_shoulder.x + right_shoulder.x) / 2
-            center_y = (left_shoulder.y + right_shoulder.y) / 2
-            
-            # Конвертируем в пиксели
-            pixel_x = int(center_x * frame_width)
-            pixel_y = int(center_y * frame_height)
-            
-            # Простой расчет расстояния на основе размера скелета
-            min_y = float('inf')
-            max_y = float('-inf')
-            for landmark in landmarks.landmark:
-                y = landmark.y * frame_height
-                min_y = min(min_y, y)
-                max_y = max(max_y, y)
-            
-            height_pixels = max_y - min_y
-            # Нормализуем расстояние: 1 метр при высоте 1/3 экрана, умножаем на 2 для соответствия реальной дистанции
-            distance = 2 * (frame_height / 3) / height_pixels if height_pixels > 0 else 0
-            
-            # Сохраняем последнее расстояние для проверки в handle_attack
-            self.last_distance = distance
-            
-            # Простой расчет скорости
-            if self.last_position:
-                dx = pixel_x - self.last_position[0]
-                dy = pixel_y - self.last_position[1]
-                # Нормализуем скорость: 1 м/с при движении на 1/10 экрана в секунду
-                speed = (dx * dx + dy * dy) ** 0.5 / (frame_width / 10)
+        # скорость пикселей/сек и направление (рад)
+        now = time.time()
+        if not hasattr(self, 'last_pixel_pos'):
+            self.last_pixel_pos = (target_x, target_y)
+            self.last_pixel_time = now
+            speed = 0.0
+            direction = 0.0
+        else:
+            dt = now - self.last_pixel_time
+            if dt > 0:
+                dx, dy = target_x - self.last_pixel_pos[0], target_y - self.last_pixel_pos[1]
+                speed = math.hypot(dx, dy) / dt
                 direction = math.atan2(dy, dx)
+                self.last_pixel_pos = (target_x, target_y)
+                self.last_pixel_time = now
             else:
                 speed = 0.0
                 direction = 0.0
-            
-            self.last_position = (pixel_x, pixel_y)
-            
-            return pixel_x, pixel_y, distance, speed, direction
-            
-        except Exception as e:
-            print(f"Error in calculate_3d_position: {str(e)}")
-            return None, None, None, 0.0, 0.0
 
+        return target_x, target_y, distance, speed, direction
+        
+    def toggle_following(self):
+        """Переключает режим следования за целью"""
+        self.following_enabled = not self.following_enabled
+        return True
+        
+    def toggle_mode(self):
+        """Переключает режим управления мышью (абсолютный/относительный)"""
+        self.relative_mode = not self.relative_mode
+        return True
+        
+    def toggle_attack(self):
+        """Переключает режим атаки"""
+        self.attack_enabled = not self.attack_enabled
+        return True
+        
+    def handle_attack(self):
+        """Обрабатывает режим атаки"""
+        if self.attack_enabled:
+            current_time = time.time()
+            if current_time - self.last_attack_time >= self.attack_interval:
+                # Выполняем клик
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                
+                # Обновляем время и интервал
+                self.last_attack_time = current_time
+                self.attack_interval = random.uniform(0.1, 0.3)
+                
+    def handle_auto_movement(self, distance, box):
+        """Обрабатывает автоматическое движение курсора"""
+        if not self.following_enabled or not box:
+            return
+            
+        min_x, min_y, max_x, max_y = box
+        target_x = (min_x + max_x) // 2
+        target_y = (min_y + max_y) // 2
+        
+        # Диагностика - вывести информацию о рамке и её центре
+        print(f"Box: ({min_x}, {min_y}) - ({max_x}, {max_y}), center: ({target_x}, {target_y})")
+        
+        self.move_cursor(target_x, target_y)
+        
+    def _update_loop(self):
+        """Основной цикл обновления позиции мыши с частотой 500 Hz"""
+        last_time = time.perf_counter()
+        
+        while self.running:
+            current_time = time.perf_counter()
+            dt = current_time - last_time
+            
+            if dt >= self.update_interval:
+                try:
+                    if self.relative_mode:
+                        self._update_relative_mode()
+                    else:
+                        self._update_absolute_mode()
+                    
+                    last_time = current_time
+                except Exception as e:
+                    print(f"Error in update loop: {str(e)}")
+                    
+            time.sleep(max(0, self.update_interval - dt))
+    
+    def _update_relative_mode(self):
+        """Обновление в относительном режиме: однократное движение к рамке со смещением самой рамки."""
+        # Проверка наличия цели (если нет рамки - останавливаемся)
+        if not self.last_box:
+            print("No target detected - stopping movement")
+            return
+        
+        # Получаем разницу между целью и центром экрана
+        dx = self.target_x - self.center_x
+        dy = self.target_y - self.center_y
+        
+        # Вычисляем расстояние до цели
+        distance = math.sqrt(dx*dx + dy*dy)
+        
+        # Порог остановки - если достигли цели
+        stop_threshold = 80
+        
+        print(f"Relative: dist={distance:.1f}, dx={dx}, dy={dy}")
+        
+        # Если близко к цели - останавливаемся
+        if distance <= stop_threshold:
+            print(f"TARGET REACHED - stopping at distance {distance:.1f}")
+            return
+        
+        # Нормализуем направление для получения вектора единичной длины
+        if distance > 0:
+            norm_dx = dx / distance
+            norm_dy = dy / distance
+        else:
+            norm_dx = 0
+            norm_dy = 0
+        
+        # Фактор скорости - текущее значение оптимально
+        slow_factor = 500
+        
+        # Вычисляем шаг движения
+        move_x = norm_dx * 100 / slow_factor
+        move_y = norm_dy * 100 / slow_factor
+        
+        # Обеспечиваем минимальное движение
+        if abs(move_x) < 0.1 and norm_dx != 0:
+            move_x = 0.1 if norm_dx > 0 else -0.1
+        
+        if abs(move_y) < 0.1 and norm_dy != 0:
+            move_y = 0.1 if norm_dy > 0 else -0.1
+        
+        # Округляем для mouse_event с минимумом ±1
+        move_amount_x = int(move_x * 10)
+        move_amount_y = int(move_y * 10)
+        
+        if move_amount_x == 0 and norm_dx != 0:
+            move_amount_x = 1 if norm_dx > 0 else -1
+        
+        if move_amount_y == 0 and norm_dy != 0:
+            move_amount_y = 1 if norm_dy > 0 else -1
+        
+        print(f"Move=({move_amount_x},{move_amount_y})")
+        
+        # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Перемещаем виртуальную цель НАВСТРЕЧУ движению
+        # Это создает эффект сходимости курсора и цели
+        virtual_target_shift = 5  # Шаг смещения виртуальной цели
+        
+        # Сдвигаем виртуальную цель навстречу движению
+        self.target_x -= move_amount_x * virtual_target_shift
+        self.target_y -= move_amount_y * virtual_target_shift
+        
+        print(f"Adjusted target to ({self.target_x}, {self.target_y})")
+        
+        # Перемещаем курсор в направлении цели
+        win32api.mouse_event(
+            win32con.MOUSEEVENTF_MOVE, 
+            move_amount_x, move_amount_y, 
+            0, 0
+        )
+        
+        # Мгновенно возвращаем курсор в центр экрана
+        win32api.SetCursorPos((self.center_x, self.center_y))
+    
+    def _update_absolute_mode(self):
+        """Обновление в абсолютном режиме с улучшенным движением к цели"""
+        current_x, current_y = win32api.GetCursorPos()
+        
+        # Вычисляем разницу до цели
+        dx = self.target_x - current_x
+        dy = self.target_y - current_y
+        distance = (dx**2 + dy**2)**0.5
+        
+        # Отладка с более подробной информацией
+        print(f"Absolute: dist={distance:.1f}, dx={dx}, dy={dy}, target=({self.target_x},{self.target_y})")
+        
+        # Порог остановки - если достигли цели
+        stop_threshold = 5
+        if distance <= stop_threshold:
+            print(f"TARGET REACHED - stopping at distance {distance:.1f}")
+            return
+        
+        # Замедление абсолютного режима
+        slow_factor = 100
+        
+        # Вычисляем нормализованное направление
+        if distance > 0:
+            norm_dx = dx / distance
+            norm_dy = dy / distance
+        else:
+            norm_dx = 0
+            norm_dy = 0
+        
+        # Применяем двухэтапный расчет:
+        # 1. Cначала учитываем расстояние и сглаживание (для больших расстояний)
+        # 2. Затем гарантируем минимальное движение в правильном направлении
+        
+        # Основной расчет движения
+        move_x = dx * self.smoothing_factor / slow_factor
+        move_y = dy * self.smoothing_factor / slow_factor
+        
+        # Минимальное движение вдоль каждой оси
+        min_move = 1.0 / slow_factor
+        
+        # Гарантируем минимальное движение в нужном направлении
+        if abs(move_x) < min_move and norm_dx != 0:
+            move_x = min_move if norm_dx > 0 else -min_move
+        
+        if abs(move_y) < min_move and norm_dy != 0:
+            move_y = min_move if norm_dy > 0 else -min_move
+        
+        # Преобразуем в целые пиксели
+        new_x = int(current_x + move_x)
+        new_y = int(current_y + move_y)
+        
+        # Не допускаем "прилипания" к одной координате
+        if new_x == current_x and dx != 0:
+            new_x += 1 if dx > 0 else -1
+        
+        if new_y == current_y and dy != 0:
+            new_y += 1 if dy > 0 else -1
+        
+        # Диагностика
+        print(f"Absolute move: ({current_x},{current_y}) → ({new_x},{new_y}), delta=({move_x:.2f},{move_y:.2f})")
+        
+        # Ограничиваем координаты экраном
+        new_x = max(0, min(new_x, self.screen_width - 1))
+        new_y = max(0, min(new_y, self.screen_height - 1))
+        
+        # Устанавливаем новую позицию
+        win32api.SetCursorPos((new_x, new_y))
+    
+    def move_cursor(self, target_x, target_y):
+        """Установка целевой позиции курсора"""
+        try:
+            # Всегда обновляем целевую позицию без каких-либо коррекций
+            self.target_x = target_x
+            self.target_y = target_y
+            return win32api.GetCursorPos()
+        except Exception as e:
+            print(f"Error in move_cursor: {str(e)}")
+            return win32api.GetCursorPos()
+    
+    def cleanup(self):
+        """Очистка ресурсов при завершении"""
+        self.running = False
+        if self.update_thread.is_alive():
+            self.update_thread.join(timeout=1.0)
+    
     def __del__(self):
-        """Очистка при завершении работы"""
-        if self.is_moving:
-            keyboard.release('w')
+        self.cleanup()
 
 class VideoRecorder:
     def __init__(self):
@@ -1180,27 +1284,33 @@ def capture_screen():
 
 def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
     try:
+        print("Starting process_frame...")
+        
         if frame is None or frame.size == 0:
             print("Error: Invalid frame")
             return None, None, None, 0.0, 0.0, []
             
         perf_monitor.start('process')
+        print("Process timer started")
         
         # Получаем размеры экрана
         screen_width = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
         screen_height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
-        
-        # Проверяем размеры кадра
-        if frame.shape[0] != screen_height or frame.shape[1] != screen_width:
-            frame = cv2.resize(frame, (screen_width, screen_height))
+        print(f"Screen dimensions: {screen_width}x{screen_height}")
+        print(f"Frame dimensions: {frame.shape[1]}x{frame.shape[0]}")
         
         # Конвертируем в RGB для MediaPipe
+        print("Converting frame to RGB...")
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        print("Frame converted to RGB")
+        print(f"RGB frame dimensions: {rgb_frame.shape[1]}x{rgb_frame.shape[0]}")
         
         # Получаем результаты от MediaPipe
+        print("Processing with MediaPipe...")
         perf_monitor.start('detection')
         results = holistic.process(rgb_frame)
         perf_monitor.stop('detection')
+        print("MediaPipe processing completed")
         
         # Список для хранения всех найденных объектов
         detected_objects = []
@@ -1208,15 +1318,19 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
         
         # Обрабатываем результаты распознавания
         if results.pose_landmarks:
+            print("Pose landmarks detected")
             try:
                 # Получаем 3D позицию цели
+                print("Calculating 3D position by FOV+size...")
                 target_x, target_y, target_distance, speed, direction = cursor_controller.calculate_3d_position(
                     results.pose_landmarks,
                     screen_width,
                     screen_height
                 )
+                print(f"3D position calculated: ({target_x}, {target_y}, {target_distance:.2f} m)")
                 
                 # Создаем рамку для объекта
+                print("Drawing bounding box...")
                 box = DrawingUtils.draw_bounding_box(
                     frame,
                     results.pose_landmarks,
@@ -1224,6 +1338,7 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                     20,
                     2
                 )
+                print("Bounding box drawn")
                 
                 # Сохраняем рамку в контроллере
                 cursor_controller.last_box = box
@@ -1237,21 +1352,28 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                 })
                 
                 # Управляем автоматическим движением
+                print("Handling auto movement...")
                 cursor_controller.handle_auto_movement(target_distance, box)
+                print("Auto movement handled")
                 
             except Exception as e:
                 print(f"Error processing pose landmarks: {str(e)}")
+                import traceback
+                traceback.print_exc()
         else:
-            # Если объект не обнаружен, сбрасываем рамку
+            print("No pose landmarks detected")
             cursor_controller.last_box = None
         
         # Перемещаем курсор к цели
         if target_x is not None and target_y is not None:
+            print("Moving cursor...")
             perf_monitor.start('cursor')
             cursor_x, cursor_y = cursor_controller.move_cursor(target_x, target_y)
             perf_monitor.stop('cursor')
+            print(f"Cursor moved to ({cursor_x}, {cursor_y})")
             
             # Рисуем только необходимые элементы
+            print("Drawing debug elements...")
             perf_monitor.start('drawing')
             # Рисуем рамку вокруг тела
             if detected_objects and detected_objects[0]['box']:
@@ -1282,15 +1404,21 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                         tipLength=0.2
                     )
             perf_monitor.stop('drawing')
+            print("Debug elements drawn")
         
         # Показываем результат в отдельном окне
         try:
+            print("Showing debug window...")
             cv2.imshow('Debug View', frame)
-            cv2.waitKey(1)  # Важно для обработки событий OpenCV
+            cv2.waitKey(1)
+            print("Debug window shown")
         except Exception as e:
             print(f"Error showing debug window: {str(e)}")
+            import traceback
+            traceback.print_exc()
         
         perf_monitor.stop('process')
+        print("Process frame completed successfully")
         return target_x, target_y, target_distance, speed, direction, detected_objects
         
     except Exception as e:
@@ -1302,18 +1430,34 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
 
 def main():
     try:
+        print("Starting initialization...")
+        
         # Отключаем защиту PyAutoGUI
         pyautogui.FAILSAFE = False
+        print("PyAutoGUI failsafe disabled")
         
         # Инициализация компонентов
+        print("Initializing CursorController...")
         cursor_controller = CursorController()
+        print("CursorController initialized")
+        
+        print("Initializing OverlayWindow...")
         overlay = OverlayWindow()
+        print("OverlayWindow initialized")
+        
+        print("Initializing VideoRecorder...")
         recorder = VideoRecorder()
+        print("VideoRecorder initialized")
+        
+        print("Initializing PerformanceMonitor...")
         perf_monitor = PerformanceMonitor()
+        print("PerformanceMonitor initialized")
         
         # Создаем окно для отладки
+        print("Creating debug window...")
         cv2.namedWindow('Debug View', cv2.WINDOW_NORMAL)
         cv2.resizeWindow('Debug View', 1280, 720)
+        print("Debug window created")
         
         # Основной цикл
         cursor_pos = (0, 0)
@@ -1325,6 +1469,8 @@ def main():
         frame_count = 0
         start_time = time.time()
         last_stats_time = time.time()
+        last_process_time = time.time()
+        process_interval = 1.0 / 60.0  # 60 Hz для process_frame
         
         print("Starting main loop...")
         print("Press '-' to toggle between absolute and relative mouse movement modes")
@@ -1335,82 +1481,79 @@ def main():
         
         while True:
             try:
+                current_time = time.time()
+                
                 # Проверяем нажатие клавиш перед обработкой кадра
                 if keyboard.is_pressed('F1'):
                     print("F1 pressed, exiting...")
                     break
                 elif keyboard.is_pressed('.'):
                     if not recorder.is_recording:
+                        print("Starting recording...")
                         recorder.start_recording(frame)
                     else:
+                        print("Stopping recording...")
                         recorder.stop_recording()
                 elif keyboard.is_pressed('-'):
                     if cursor_controller.toggle_mode():
-                        time.sleep(0.1)  # Короткая задержка только при успешном переключении
+                        print("Toggled mouse mode")
+                        time.sleep(0.1)
                 elif keyboard.is_pressed('+'):
                     if cursor_controller.toggle_following():
-                        time.sleep(0.1)  # Короткая задержка только при успешном переключении
+                        print("Toggled following mode")
+                        time.sleep(0.1)
                 elif keyboard.is_pressed('backspace'):
                     if cursor_controller.toggle_attack():
-                        time.sleep(0.1)  # Короткая задержка только при успешном переключении
+                        print("Toggled attack mode")
+                        time.sleep(0.1)
                 
-                perf_monitor.start('capture')
-                # Захват экрана
-                frame = capture_screen()
-                perf_monitor.stop('capture')
-                
-                if frame is None:
-                    print("Error: Failed to capture screen")
-                    time.sleep(0.1)  # Пауза перед следующей попыткой
-                    continue
-                
-                # Обработка кадра
-                target_x, target_y, target_distance, speed, direction, detected_objects = process_frame(
-                    frame, cursor_controller, overlay, fps, perf_monitor
-                )
-                
-                if target_x is not None and target_y is not None:
-                    # Обновляем позиции
-                    target_pos = (target_x, target_y)
-                    distance = target_distance
+                # Обработка кадра с ограничением частоты до 60 Hz
+                if current_time - last_process_time >= process_interval:
+                    perf_monitor.start('capture')
+                    frame = capture_screen()
+                    perf_monitor.stop('capture')
                     
-                    # Сглаживание движения курсора
-                    cursor_pos = cursor_controller.move_cursor(
-                        target_pos[0], target_pos[1]
-                    )
-                    
-                    # Вычисляем движение как целые числа
-                    movement = (
-                        int(target_pos[0] - cursor_pos[0]),
-                        int(target_pos[1] - cursor_pos[1])
-                    )
-                else:
-                    movement = (0, 0)
-                
-                # Обновление FPS
-                frame_count += 1
-                elapsed_time = time.time() - start_time
-                if elapsed_time >= 1.0:
-                    fps = frame_count / elapsed_time
-                    frame_count = 0
-                    start_time = time.time()
-                
-                # Обновление оверлея
-                perf_monitor.start('overlay')
-                try:
-                    overlay.update_info(
-                        cursor_pos, target_pos, distance,
-                        movement, detected_objects,
-                        fps, perf_monitor.get_stats(),
-                        speed, direction, cursor_controller
-                    )
-                except Exception as e:
-                    print(f"Error updating overlay: {str(e)}")
-                finally:
-                    perf_monitor.stop('overlay')
+                    if frame is not None:
+                        target_x, target_y, target_distance, speed, direction, detected_objects = process_frame(
+                            frame, cursor_controller, overlay, fps, perf_monitor
+                        )
+                        
+                        if target_x is not None and target_y is not None:
+                            target_pos = (target_x, target_y)
+                            distance = target_distance
+                            cursor_pos = cursor_controller.move_cursor(target_pos[0], target_pos[1])
+                            movement = (int(target_pos[0] - cursor_pos[0]), int(target_pos[1] - cursor_pos[1]))
+                        else:
+                            movement = (0, 0)
+                            
+                        # Обновление оверлея
+                        perf_monitor.start('overlay')
+                        try:
+                            overlay.update_info(
+                                cursor_pos, target_pos, distance,
+                                movement, detected_objects,
+                                fps, perf_monitor.get_stats(),
+                                speed, direction, cursor_controller
+                            )
+                        except Exception as e:
+                            print(f"Error updating overlay: {str(e)}")
+                            import traceback
+                            traceback.print_exc()
+                        finally:
+                            perf_monitor.stop('overlay')
+                            
+                        # Обновляем время последней обработки
+                        last_process_time = current_time
+                        
+                        # Обновление FPS
+                        frame_count += 1
+                        elapsed_time = current_time - start_time
+                        if elapsed_time >= 1.0:
+                            fps = frame_count / elapsed_time
+                            frame_count = 0
+                            start_time = current_time
                 
                 # Выводим статистику каждые 5 секунд
-                current_time = time.time()
                 if current_time - last_stats_time >= 5.0:
                     stats = perf_monitor.get_stats()
                     print("\nPerformance Statistics:")
@@ -1419,7 +1562,7 @@ def main():
                     last_stats_time = current_time
                 
                 # Запись кадра если идет запись
-                if recorder.is_recording:
+                if recorder.is_recording and frame is not None:
                     try:
                         recorder.write_frame(frame)
                     except Exception as e:
@@ -1439,7 +1582,7 @@ def main():
                 print(f"Error in main loop iteration: {str(e)}")
                 import traceback
                 traceback.print_exc()
-                time.sleep(1)  # Пауза перед следующей итерацией
+                time.sleep(1)
                 
     except Exception as e:
         print(f"Error in main loop: {str(e)}")
@@ -1447,7 +1590,7 @@ def main():
         traceback.print_exc()
         return 1
     finally:
-        # Очистка ресурсов
+        print("Cleaning up resources...")
         if 'recorder' in locals():
             recorder.stop_recording()
         if 'overlay' in locals():
@@ -1456,7 +1599,7 @@ def main():
             except:
                 pass
         cv2.destroyAllWindows()
-        cv2.waitKey(1)  # Даем время на закрытие окон
+        cv2.waitKey(1)
         print("Cleanup completed")
         return 0
 
