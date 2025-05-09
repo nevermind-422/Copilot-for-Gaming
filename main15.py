@@ -668,6 +668,32 @@ class OverlayWindow:
             print(f"Error in OverlayWindow cleanup: {str(e)}")
             pass  # Игнорируем ошибки при очистке
 
+class KalmanFilter:
+    """Реализация простого фильтра Калмана для сглаживания координат"""
+    def __init__(self, process_variance=0.001, measurement_variance=0.1):
+        self.process_variance = process_variance  # малое значение = сильное сглаживание
+        self.measurement_variance = measurement_variance
+        self.kalman_gain = 0
+        self.estimated_value = None
+        self.estimate_error = 1.0
+        
+    def update(self, measurement):
+        # Инициализация при первом измерении
+        if self.estimated_value is None:
+            self.estimated_value = measurement
+            return self.estimated_value
+            
+        # Предсказание
+        predicted_value = self.estimated_value
+        prediction_error = self.estimate_error + self.process_variance
+        
+        # Обновление
+        self.kalman_gain = prediction_error / (prediction_error + self.measurement_variance)
+        self.estimated_value = predicted_value + self.kalman_gain * (measurement - predicted_value)
+        self.estimate_error = (1 - self.kalman_gain) * prediction_error
+        
+        return self.estimated_value
+
 class CursorController:
     def __init__(self):
         # Системные параметры
@@ -701,6 +727,13 @@ class CursorController:
         self.last_position = None
         self.last_box = None
         
+        # Фильтры Калмана для координат рамки
+        self.kalman_x_min = KalmanFilter(process_variance=0.0005, measurement_variance=0.2)
+        self.kalman_y_min = KalmanFilter(process_variance=0.0005, measurement_variance=0.2)
+        self.kalman_x_max = KalmanFilter(process_variance=0.0005, measurement_variance=0.2)
+        self.kalman_y_max = KalmanFilter(process_variance=0.0005, measurement_variance=0.2)
+        self.filtered_box = None
+
     def calculate_3d_position(self, landmarks, screen_width, screen_height):
         """Вычисляет экранную позицию цели и примерное расстояние в метрах
             на основе угла обзора и размера плеч в кадре."""
@@ -777,19 +810,39 @@ class CursorController:
                 self.attack_interval = random.uniform(0.1, 0.3)
                 
     def handle_auto_movement(self, distance, box):
-        """Обрабатывает автоматическое движение курсора"""
+        """Обрабатывает автоматическое движение курсора с применением фильтра Калмана"""
         if not self.following_enabled or not box:
             return
             
         min_x, min_y, max_x, max_y = box
-        target_x = (min_x + max_x) // 2
-        target_y = (min_y + max_y) // 2
         
-        # Диагностика - вывести информацию о рамке и её центре
-        print(f"Box: ({min_x}, {min_y}) - ({max_x}, {max_y}), center: ({target_x}, {target_y})")
+        # Применяем фильтр Калмана к каждой координате рамки
+        filtered_min_x = self.kalman_x_min.update(min_x)
+        filtered_min_y = self.kalman_y_min.update(min_y)
+        filtered_max_x = self.kalman_x_max.update(max_x)
+        filtered_max_y = self.kalman_y_max.update(max_y)
         
+        # Округляем до целых значений
+        filtered_min_x = int(filtered_min_x)
+        filtered_min_y = int(filtered_min_y)
+        filtered_max_x = int(filtered_max_x)
+        filtered_max_y = int(filtered_max_y)
+        
+        # Сохраняем отфильтрованную рамку
+        self.filtered_box = (filtered_min_x, filtered_min_y, filtered_max_x, filtered_max_y)
+        
+        # Используем отфильтрованные координаты для центра
+        target_x = (filtered_min_x + filtered_max_x) // 2
+        target_y = (filtered_min_y + filtered_max_y) // 2
+        
+        # Диагностика - вывести информацию о рамках
+        print(f"Raw Box: ({min_x}, {min_y}) - ({max_x}, {max_y})")
+        print(f"Filtered Box: ({filtered_min_x}, {filtered_min_y}) - ({filtered_max_x}, {filtered_max_y})")
+        print(f"Target: ({target_x}, {target_y})")
+        
+        # Используем отфильтрованные координаты для позиционирования
         self.move_cursor(target_x, target_y)
-        
+    
     def _update_loop(self):
         """Основной цикл обновления позиции мыши с частотой 500 Hz"""
         last_time = time.perf_counter()
