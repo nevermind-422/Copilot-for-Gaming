@@ -660,7 +660,7 @@ class OverlayWindow:
 
 class KalmanFilter:
     """Реализация простого фильтра Калмана для сглаживания координат"""
-    def __init__(self, process_variance=0.001, measurement_variance=0.1):
+    def __init__(self, process_variance=0.0001, measurement_variance=0.1):  # Уменьшаем process_variance для более сильного сглаживания
         self.process_variance = process_variance  # малое значение = сильное сглаживание
         self.measurement_variance = measurement_variance
         self.kalman_gain = 0
@@ -717,12 +717,24 @@ class CursorController:
         self.last_position = None
         self.last_box = None
         
-        # Фильтры Калмана для координат рамки
-        self.kalman_x_min = KalmanFilter(process_variance=0.0005, measurement_variance=0.2)
-        self.kalman_y_min = KalmanFilter(process_variance=0.0005, measurement_variance=0.2)
-        self.kalman_x_max = KalmanFilter(process_variance=0.0005, measurement_variance=0.2)
-        self.kalman_y_max = KalmanFilter(process_variance=0.0005, measurement_variance=0.2)
+        # Фильтры Калмана для координат рамки с более сильным сглаживанием
+        self.kalman_x_min = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)  # Уменьшаем process_variance для более сильного сглаживания
+        self.kalman_y_min = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)
+        self.kalman_x_max = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)
+        self.kalman_y_max = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)
         self.filtered_box = None
+        
+        # Добавляем фильтры для размеров рамки
+        self.kalman_width = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)
+        self.kalman_height = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)
+        
+        # Добавляем фильтры для центра рамки
+        self.kalman_center_x = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)
+        self.kalman_center_y = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)
+        
+        # Добавляем историю размеров для дополнительного сглаживания
+        self.width_history = deque(maxlen=5)
+        self.height_history = deque(maxlen=5)
         
         # Параметры движения вперед
         self.w_key_pressed = False
@@ -744,6 +756,28 @@ class CursorController:
         self.VIRTUAL_TARGET_SHIFT = 5  # Шаг смещения виртуальной цели
         self.MIN_MOVE = 1.0 / 100  # Минимальное движение для абсолютного режима
         self.RELATIVE_MIN_MOVE = 0.1  # Минимальное движение для относительного режима
+        
+        # Параметры для сглаживания движения
+        self.movement_history = deque(maxlen=5)  # История движений для сглаживания
+        self.last_move_time = time.time()
+        self.move_interval = 1/500  # 500 Hz для более плавного движения
+        self.velocity_x = 0
+        self.velocity_y = 0
+        self.velocity_smoothing = 0.3  # Фактор сглаживания скорости
+        
+        # Параметры для относительного режима
+        self.RELATIVE_STOP_THRESHOLD = 80
+        self.RELATIVE_SLOW_FACTOR = 500
+        self.RELATIVE_MIN_MOVE = 0.1
+        self.RELATIVE_MAX_VELOCITY = 50  # Максимальная скорость движения
+        self.RELATIVE_ACCELERATION = 0.5  # Ускорение/замедление
+        
+        # Параметры для экспоненциального сглаживания
+        self.smoothing_factor = 0.1  # Чем меньше, тем сильнее сглаживание
+        self.smoothed_min_x = None
+        self.smoothed_min_y = None
+        self.smoothed_max_x = None
+        self.smoothed_max_y = None
     
     def calculate_3d_position(self, landmarks, screen_width, screen_height):
         """Вычисляет экранную позицию цели и примерное расстояние в метрах
@@ -856,13 +890,10 @@ class CursorController:
         
         # Проверка на потерю цели
         if not box:
-            # Не отпускаем клавишу W автоматически - пусть пользователь сам управляет
-            # Только автоматически нажатую клавишу отпускаем
             if self.w_key_pressed and self.following_enabled and not self.manual_key_pressed:
                 try:
                     keyboard.release('w')
                     self.w_key_pressed = False
-                    # Имитируем небольшую паузу для более быстрой остановки
                     time.sleep(0.01)
                 except Exception as e:
                     print(f"Error releasing W key: {e}")
@@ -870,73 +901,61 @@ class CursorController:
         
         # Проверка валидности расстояния
         if distance is None or distance <= 0:
-            # Не отпускаем клавишу W автоматически - пусть пользователь сам управляет
             return
         
-        # Применяем фильтр Калмана к координатам рамки
+        # Применяем экспоненциальное сглаживание к координатам рамки
         min_x, min_y, max_x, max_y = box
         
+        if self.smoothed_min_x is None:
+            self.smoothed_min_x = min_x
+            self.smoothed_min_y = min_y
+            self.smoothed_max_x = max_x
+            self.smoothed_max_y = max_y
+        else:
+            self.smoothed_min_x = (1 - self.smoothing_factor) * self.smoothed_min_x + self.smoothing_factor * min_x
+            self.smoothed_min_y = (1 - self.smoothing_factor) * self.smoothed_min_y + self.smoothing_factor * min_y
+            self.smoothed_max_x = (1 - self.smoothing_factor) * self.smoothed_max_x + self.smoothing_factor * max_x
+            self.smoothed_max_y = (1 - self.smoothing_factor) * self.smoothed_max_y + self.smoothing_factor * max_y
+        
+        # Обновляем box с использованием сглаженных значений
+        box = (self.smoothed_min_x, self.smoothed_min_y, self.smoothed_max_x, self.smoothed_max_y)
+        
+        # Применяем фильтр Калмана к координатам рамки
         filtered_min_x = self.kalman_x_min.update(min_x)
         filtered_min_y = self.kalman_y_min.update(min_y)
         filtered_max_x = self.kalman_x_max.update(max_x)
         filtered_max_y = self.kalman_y_max.update(max_y)
         
-        # Округляем до целых
-        filtered_min_x = int(filtered_min_x)
-        filtered_min_y = int(filtered_min_y)
-        filtered_max_x = int(filtered_max_x)
-        filtered_max_y = int(filtered_max_y)
-        
         # Сохраняем отфильтрованные данные
         self.filtered_box = (filtered_min_x, filtered_min_y, filtered_max_x, filtered_max_y)
         self.last_box = self.filtered_box
         
-        # Центр цели
-        target_x = (filtered_min_x + filtered_max_x) // 2
-        target_y = (filtered_min_y + filtered_max_y) // 2
+        # Вычисляем центр цели
+        target_x = int((filtered_min_x + filtered_max_x) / 2)
+        target_y = int((filtered_min_y + filtered_max_y) / 2)
         
-        # Применяем фильтр к расстоянию для сглаживания колебаний
+        # Применяем фильтр к расстоянию
         filtered_distance = self.distance_filter.update(distance)
-        
-        # Сохраняем отфильтрованное расстояние для отображения в оверлее
         self.last_distance = filtered_distance
         
-        # Быстрая проверка - если расстояние меньше порога, немедленно отпускаем клавишу W
-        # Это обеспечит более быструю реакцию при остановке
-        if self.w_key_pressed and not self.manual_key_pressed and self.following_enabled and filtered_distance < 1.9:
-            try:
-                keyboard.release('w')
-                self.w_key_pressed = False
-                # Когда быстро остановились, возвращаемся
-                return
-            except Exception as e:
-                print(f"Error in quick stop release: {e}")
-        
-        # Управляем движением вперед только если режим Following включен
+        # Управление клавишей W
         if self.following_enabled:
-            # Проверка, не нажата ли клавиша W пользователем вручную
             try:
-                # Если пользователь сам нажал W - не вмешиваемся в управление
                 manual_w_pressed = keyboard.is_pressed('w')
                 if manual_w_pressed and not self.w_key_pressed:
                     self.manual_key_pressed = True
-                    print("Manual W key press detected - Auto mode temporarily disabled")
-                    # Не будем управлять W пока пользователь не отпустит клавишу
                     return
                 if not manual_w_pressed and self.manual_key_pressed:
                     self.manual_key_pressed = False
-                    print("Manual W key released - Auto mode re-enabled")
             except:
                 pass
             
-            # Если это не ручной режим - применяем автоматическое управление
             if not self.manual_key_pressed:
-                release_threshold = 1.9  # Порог отпускания клавиши (повысили до 1.9 метра)
-                press_threshold = 2.1    # Порог нажатия клавиши (повысили до 2.1 метра)
+                release_threshold = 1.9
+                press_threshold = 2.1
                 
                 if not self.w_key_pressed and filtered_distance > press_threshold:
                     try:
-                        print(f"Distance > {press_threshold}m ({filtered_distance:.2f}m) - PRESSING W key")
                         keyboard.press('w')
                         self.w_key_pressed = True
                     except Exception as e:
@@ -948,7 +967,6 @@ class CursorController:
                     except Exception as e:
                         print(f"Error releasing W key: {e}")
         else:
-            # Режим Following отключен - отпускаем только если мы сами нажимали
             if self.w_key_pressed and not self.manual_key_pressed:
                 try:
                     keyboard.release('w')
