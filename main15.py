@@ -282,21 +282,6 @@ class OverlayWindow:
                 self.save_dc.SetTextColor(0xFFFFFF)
                 self.save_dc.TextOut(x + 5, y - 15, label)
 
-    def draw_debug_info(self, cursor_pos, target_pos, distance, speed, direction, fps):
-        # Аналогично OpenCV-версии, но через self.save_dc
-        info = [
-            f"FPS: {fps:.1f}",
-            f"Distance: {distance:.2f}m" if distance is not None else "Distance: ---",
-            f"Speed: {speed:.2f} m/s" if speed is not None else "Speed: ---",
-            f"Direction: {math.degrees(direction):.1f}°" if direction is not None and speed >= 0.1 else "Direction: ---",
-            f"Cursor: {cursor_pos}" if cursor_pos else "Cursor: ---",
-            f"Target: {target_pos}" if target_pos else "Target: ---"
-        ]
-        self.save_dc.FillSolidRect((20, 20, 350, 200), 0x202020)
-        self.save_dc.SetTextColor(0x00FF00)
-        for i, line in enumerate(info):
-            self.save_dc.TextOut(30, 30 + i * 25, line)
-
     def draw_crosshair(self, cursor_controller):
         """Рисует прицел в зависимости от режима"""
         try:
@@ -516,66 +501,6 @@ class OverlayWindow:
         except Exception as e:
             print(f"Error drawing attack status: {str(e)}")
 
-    def draw_movement_debug(self, cursor_controller):
-        """Отрисовка отладочной информации о движении"""
-        try:
-            current_pos = win32api.GetCursorPos()
-            target_pos = (cursor_controller.target_x, cursor_controller.target_y)
-            
-            # Рисуем вектор движения
-            if current_pos and target_pos:
-                dx = target_pos[0] - current_pos[0]
-                dy = target_pos[1] - current_pos[1]
-                distance = (dx**2 + dy**2)**0.5
-                
-                if distance > 10:  # Минимальный порог для отрисовки
-                    # Рисуем линию движения
-                    pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0x0000FF)
-                    self.save_dc.SelectObject(pen)
-                    self.save_dc.MoveTo((int(current_pos[0]), int(current_pos[1])))
-                    self.save_dc.LineTo((int(target_pos[0]), int(target_pos[1])))
-                    
-                    # Рисуем стрелку
-                    arrow_size = 10
-                    angle = math.atan2(dy, dx)
-                    arrow_angle = math.pi / 6
-                    
-                    # Первая часть наконечника
-                    ax = target_pos[0] - arrow_size * math.cos(angle + arrow_angle)
-                    ay = target_pos[1] - arrow_size * math.sin(angle + arrow_angle)
-                    self.save_dc.MoveTo((int(target_pos[0]), int(target_pos[1])))
-                    self.save_dc.LineTo((int(ax), int(ay)))
-                    
-                    # Вторая часть наконечника
-                    ax = target_pos[0] - arrow_size * math.cos(angle - arrow_angle)
-                    ay = target_pos[1] - arrow_size * math.sin(angle - arrow_angle)
-                    self.save_dc.MoveTo((int(target_pos[0]), int(target_pos[1])))
-                    self.save_dc.LineTo((int(ax), int(ay)))
-                    
-                    # Рисуем информацию о движении
-                    self.save_dc.SetTextColor(0x00FF00)
-                    speed_text = f"Speed: {distance:.1f}px"
-                    angle_text = f"Angle: {math.degrees(angle):.1f}°"
-                    self.save_dc.TextOut(int(target_pos[0] + 10), int(target_pos[1]), speed_text)
-                    self.save_dc.TextOut(int(target_pos[0] + 10), int(target_pos[1] + 20), angle_text)
-                    
-                    # Добавляем информацию о расстоянии и статусе W
-                    w_status = "W: PRESSED" if cursor_controller.w_key_pressed else "W: RELEASED"
-                    distance_text = f"Distance: {cursor_controller.last_distance:.2f}m"
-                    movement_status = "MOVING" if cursor_controller.w_key_pressed else "STOPPED"
-                    
-                    self.save_dc.SetTextColor(cursor_controller.w_key_pressed and 0x0000FF or 0x00FF00)
-                    self.save_dc.TextOut(int(target_pos[0] + 10), int(target_pos[1] + 40), w_status)
-                    self.save_dc.TextOut(int(target_pos[0] + 10), int(target_pos[1] + 60), distance_text)
-                    self.save_dc.TextOut(int(target_pos[0] + 10), int(target_pos[1] + 80), movement_status)
-            
-            # Обновляем историю позиций
-            self.last_cursor_pos = current_pos
-            self.last_target_pos = target_pos
-            
-        except Exception as e:
-            print(f"Error in draw_movement_debug: {str(e)}")
-
     def update_info(self, cursor_pos, target_pos, distance, movement, detected_objects=None, fps=0, perf_stats=None, speed=0, direction=0, cursor_controller=None):
         current_time = time.time()
         if current_time - self.last_update_time < self.update_interval:
@@ -589,7 +514,6 @@ class OverlayWindow:
                 self.draw_following_status(cursor_controller)
                 self.draw_mode_status(cursor_controller)
                 self.draw_attack_status(cursor_controller)
-                self.draw_movement_debug(cursor_controller)  # Добавляем отрисовку отладки движения
                 
                 # Добавляем статус информации про клавишу W и расстояние
                 try:
@@ -1709,12 +1633,6 @@ def main():
         print("Initializing PerformanceMonitor...")
         perf_monitor = PerformanceMonitor()
         print("PerformanceMonitor initialized")
-        
-        # Создаем окно для отладки
-        print("Creating debug window...")
-        cv2.namedWindow('Debug View', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('Debug View', 1280, 720)
-        print("Debug window created")
         
         # Основной цикл
         cursor_pos = (0, 0)
