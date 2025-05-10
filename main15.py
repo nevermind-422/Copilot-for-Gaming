@@ -735,6 +735,15 @@ class CursorController:
         
         # Добавляем атрибут для отслеживания последнего расстояния
         self.last_distance = 0.0
+        
+        # Добавляем константы для оптимизации
+        self.STOP_THRESHOLD = 2  # Порог остановки для абсолютного режима
+        self.RELATIVE_STOP_THRESHOLD = 80  # Порог остановки для относительного режима
+        self.SLOW_FACTOR = 100  # Фактор замедления для абсолютного режима
+        self.RELATIVE_SLOW_FACTOR = 500  # Фактор замедления для относительного режима
+        self.VIRTUAL_TARGET_SHIFT = 5  # Шаг смещения виртуальной цели
+        self.MIN_MOVE = 1.0 / 100  # Минимальное движение для абсолютного режима
+        self.RELATIVE_MIN_MOVE = 0.1  # Минимальное движение для относительного режима
     
     def calculate_3d_position(self, landmarks, screen_width, screen_height):
         """Вычисляет экранную позицию цели и примерное расстояние в метрах
@@ -787,10 +796,6 @@ class CursorController:
         
         # Ограничение максимального значения расстояния
         distance = min(distance, 10.0)
-        
-        # Улучшенная диагностика
-        print(f"Box size: {box_width}x{box_height} pixels, Area ratio: {area_ratio:.6f}")
-        print(f"Calculated distance: {distance:.2f} meters")
         
         # Рассчитываем скорость и направление движения
         now = time.time()
@@ -845,21 +850,16 @@ class CursorController:
         """Обрабатывает автоматическое движение курсора и управление движением с клавишей W"""
         current_time = time.time()
         
-        # ВАЖНАЯ МОДИФИКАЦИЯ: Не проверяем нажатие клавиши W вручную,
-        # чтобы не мешать пользователю управлять движением самостоятельно
-        
         # Сохраняем расстояние для отображения в любом случае
         if distance is not None and distance > 0:
             self.last_distance = distance
         
         # Проверка на потерю цели
         if not box:
-            print(f"No box detected - target lost (w_key_pressed={self.w_key_pressed})")
             # Не отпускаем клавишу W автоматически - пусть пользователь сам управляет
             # Только автоматически нажатую клавишу отпускаем
             if self.w_key_pressed and self.following_enabled and not self.manual_key_pressed:
                 try:
-                    print("Releasing W key due to target loss")
                     keyboard.release('w')
                     self.w_key_pressed = False
                     # Имитируем небольшую паузу для более быстрой остановки
@@ -870,7 +870,6 @@ class CursorController:
         
         # Проверка валидности расстояния
         if distance is None or distance <= 0:
-            print(f"Invalid distance value: {distance}")
             # Не отпускаем клавишу W автоматически - пусть пользователь сам управляет
             return
         
@@ -906,7 +905,6 @@ class CursorController:
         # Это обеспечит более быструю реакцию при остановке
         if self.w_key_pressed and not self.manual_key_pressed and self.following_enabled and filtered_distance < 1.9:
             try:
-                print(f"Quick stop: Distance {filtered_distance:.2f}m < threshold 1.9m - IMMEDIATELY RELEASING W key")
                 keyboard.release('w')
                 self.w_key_pressed = False
                 # Когда быстро остановились, возвращаемся
@@ -945,7 +943,6 @@ class CursorController:
                         print(f"Error pressing W key: {e}")
                 elif self.w_key_pressed and filtered_distance < release_threshold:
                     try:
-                        print(f"Distance <= {release_threshold}m ({filtered_distance:.2f}m) - RELEASING W key")
                         keyboard.release('w')
                         self.w_key_pressed = False
                     except Exception as e:
@@ -954,7 +951,6 @@ class CursorController:
             # Режим Following отключен - отпускаем только если мы сами нажимали
             if self.w_key_pressed and not self.manual_key_pressed:
                 try:
-                    print("Following disabled - stopping movement")
                     keyboard.release('w')
                     self.w_key_pressed = False
                 except Exception as e:
@@ -985,10 +981,8 @@ class CursorController:
             time.sleep(max(0, self.update_interval - dt))
     
     def _update_relative_mode(self):
-        """Обновление в относительном режиме: однократное движение к рамке со смещением самой рамки."""
-        # Проверка наличия цели (если нет рамки - останавливаемся)
+        """Обновление в относительном режиме с оптимизированными вычислениями"""
         if not self.last_box:
-            print("No target detected - stopping movement")
             return
         
         # Получаем разницу между целью и центром экрана
@@ -998,129 +992,92 @@ class CursorController:
         # Вычисляем расстояние до цели
         distance = math.sqrt(dx*dx + dy*dy)
         
-        # Порог остановки - если достигли цели
-        stop_threshold = 80
-        
-        print(f"Relative: dist={distance:.1f}, dx={dx}, dy={dy}")
-        
         # Если близко к цели - останавливаемся
-        if distance <= stop_threshold:
-            print(f"TARGET REACHED - stopping at distance {distance:.1f}")
+        if distance <= self.RELATIVE_STOP_THRESHOLD:
             return
         
-        # Нормализуем направление для получения вектора единичной длины
+        # Нормализуем направление
         if distance > 0:
             norm_dx = dx / distance
             norm_dy = dy / distance
         else:
-            norm_dx = 0
-            norm_dy = 0
-        
-        # Фактор скорости - текущее значение оптимально
-        slow_factor = 500
+            return
         
         # Вычисляем шаг движения
-        move_x = norm_dx * 100 / slow_factor
-        move_y = norm_dy * 100 / slow_factor
+        move_x = norm_dx * 100 / self.RELATIVE_SLOW_FACTOR
+        move_y = norm_dy * 100 / self.RELATIVE_SLOW_FACTOR
         
         # Обеспечиваем минимальное движение
-        if abs(move_x) < 0.1 and norm_dx != 0:
-            move_x = 0.1 if norm_dx > 0 else -0.1
+        if abs(move_x) < self.RELATIVE_MIN_MOVE and norm_dx != 0:
+            move_x = self.RELATIVE_MIN_MOVE if norm_dx > 0 else -self.RELATIVE_MIN_MOVE
         
-        if abs(move_y) < 0.1 and norm_dy != 0:
-            move_y = 0.1 if norm_dy > 0 else -0.1
+        if abs(move_y) < self.RELATIVE_MIN_MOVE and norm_dy != 0:
+            move_y = self.RELATIVE_MIN_MOVE if norm_dy > 0 else -self.RELATIVE_MIN_MOVE
         
-        # Округляем для mouse_event с минимумом ±1
+        # Округляем для mouse_event
         move_amount_x = int(move_x * 10)
         move_amount_y = int(move_y * 10)
         
+        # Гарантируем минимальное движение
         if move_amount_x == 0 and norm_dx != 0:
             move_amount_x = 1 if norm_dx > 0 else -1
-        
         if move_amount_y == 0 and norm_dy != 0:
             move_amount_y = 1 if norm_dy > 0 else -1
         
-        print(f"Move=({move_amount_x},{move_amount_y})")
-        
-        # КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Перемещаем виртуальную цель НАВСТРЕЧУ движению
-        # Это создает эффект сходимости курсора и цели
-        virtual_target_shift = 5  # Шаг смещения виртуальной цели
-        
         # Сдвигаем виртуальную цель навстречу движению
-        self.target_x -= move_amount_x * virtual_target_shift
-        self.target_y -= move_amount_y * virtual_target_shift
+        self.target_x -= move_amount_x * self.VIRTUAL_TARGET_SHIFT
+        self.target_y -= move_amount_y * self.VIRTUAL_TARGET_SHIFT
         
-        print(f"Adjusted target to ({self.target_x}, {self.target_y})")
-        
-        # Перемещаем курсор в направлении цели
+        # Перемещаем курсор
         win32api.mouse_event(
             win32con.MOUSEEVENTF_MOVE, 
             move_amount_x, move_amount_y, 
             0, 0
         )
         
-        # Мгновенно возвращаем курсор в центр экрана
+        # Возвращаем курсор в центр
         win32api.SetCursorPos((self.center_x, self.center_y))
     
     def _update_absolute_mode(self):
-        """Обновление в абсолютном режиме с улучшенным движением к цели"""
+        """Обновление в абсолютном режиме с оптимизированными вычислениями"""
         current_x, current_y = win32api.GetCursorPos()
         
         # Вычисляем разницу до цели
         dx = self.target_x - current_x
         dy = self.target_y - current_y
-        distance = (dx**2 + dy**2)**0.5
+        distance = math.sqrt(dx*dx + dy*dy)
         
-        # Отладка с более подробной информацией
-        print(f"Absolute: dist={distance:.1f}, dx={dx}, dy={dy}, target=({self.target_x},{self.target_y})")
-        
-        # Порог остановки - если достигли цели
-        stop_threshold = 2
-        if distance <= stop_threshold:
+        # Если достигли цели - останавливаемся
+        if distance <= self.STOP_THRESHOLD:
             return
         
-        # Замедление абсолютного режима
-        slow_factor = 100
-        
-        # Вычисляем нормализованное направление
+        # Нормализуем направление
         if distance > 0:
             norm_dx = dx / distance
             norm_dy = dy / distance
         else:
-            norm_dx = 0
-            norm_dy = 0
-        
-        # Применяем двухэтапный расчет:
-        # 1. Cначала учитываем расстояние и сглаживание (для больших расстояний)
-        # 2. Затем гарантируем минимальное движение в правильном направлении
+            return
         
         # Основной расчет движения
-        move_x = dx * self.smoothing_factor / slow_factor
-        move_y = dy * self.smoothing_factor / slow_factor
+        move_x = dx * self.smoothing_factor / self.SLOW_FACTOR
+        move_y = dy * self.smoothing_factor / self.SLOW_FACTOR
         
-        # Минимальное движение вдоль каждой оси
-        min_move = 1.0 / slow_factor
+        # Гарантируем минимальное движение
+        if abs(move_x) < self.MIN_MOVE and norm_dx != 0:
+            move_x = self.MIN_MOVE if norm_dx > 0 else -self.MIN_MOVE
         
-        # Гарантируем минимальное движение в нужном направлении
-        if abs(move_x) < min_move and norm_dx != 0:
-            move_x = min_move if norm_dx > 0 else -min_move
+        if abs(move_y) < self.MIN_MOVE and norm_dy != 0:
+            move_y = self.MIN_MOVE if norm_dy > 0 else -self.MIN_MOVE
         
-        if abs(move_y) < min_move and norm_dy != 0:
-            move_y = min_move if norm_dy > 0 else -min_move
-        
-        # Преобразуем в целые пиксели
+        # Вычисляем новую позицию
         new_x = int(current_x + move_x)
         new_y = int(current_y + move_y)
         
-        # Не допускаем "прилипания" к одной координате
+        # Предотвращаем "прилипание"
         if new_x == current_x and dx != 0:
             new_x += 1 if dx > 0 else -1
-        
         if new_y == current_y and dy != 0:
             new_y += 1 if dy > 0 else -1
-        
-        # Диагностика
-        print(f"Absolute move: ({current_x},{current_y}) → ({new_x},{new_y}), delta=({move_x:.2f},{move_y:.2f})")
         
         # Ограничиваем координаты экраном
         new_x = max(0, min(new_x, self.screen_width - 1))
