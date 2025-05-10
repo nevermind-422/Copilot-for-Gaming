@@ -19,10 +19,14 @@ import random
 from threading import Thread
 from ultralytics import YOLO
 
-# Версия 0.019
+# Версия 0.022
 # - Заменена система распознавания с MediaPipe на YOLOv8 для улучшения дальности детекции
 # - Оптимизирована производительность за счет масштабирования входного кадра
 # - Улучшена обработка нескольких людей в кадре с выбором самого большого
+# - Добавлено распознавание всех типов объектов (не только людей)
+# - Настроена выборка ближайшего объекта в качестве цели
+# - Добавлен статический список игнорируемых объектов
+# - Добавлено отображение информации о типе объекта и расстоянии
 
 # Настраиваем логирование
 logging.basicConfig(level=logging.INFO)
@@ -258,7 +262,7 @@ class OverlayWindow:
         except Exception as e:
             print(f"Error in draw_movement_vector: {str(e)}")
 
-    def draw_bounding_box(self, box, color):
+    def draw_bounding_box(self, box, color, class_name=None, distance=None):
         if not box:
             return
         min_x, min_y, max_x, max_y = box
@@ -276,6 +280,29 @@ class OverlayWindow:
         self.save_dc.MoveTo((center_x - cross, center_y)); self.save_dc.LineTo((center_x + cross, center_y))
         self.save_dc.MoveTo((center_x, center_y - cross)); self.save_dc.LineTo((center_x, center_y + cross))
         self.save_dc.Ellipse((center_x - cross, center_y - cross, center_x + cross, center_y + cross))
+        
+        # Добавляем информацию о классе и расстоянии, если они предоставлены
+        if class_name or distance:
+            info_text = ""
+            if class_name:
+                info_text += f"{class_name}"
+            if distance:
+                if info_text:
+                    info_text += f": {distance:.2f}m"
+                else:
+                    info_text += f"{distance:.2f}m"
+                
+            if info_text:
+                # Рисуем фон для текста
+                text_width = self.save_dc.GetTextExtent(info_text)[0]
+                bg_color = 0x404040  # Серый фон
+                brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
+                self.save_dc.SelectObject(brush)
+                self.save_dc.Rectangle((min_x, min_y - 30, min_x + text_width + 10, min_y - 5))
+                
+                # Рисуем текст
+                self.save_dc.SetTextColor(0xFFFFFF)  # Белый текст
+                self.save_dc.TextOut(min_x + 5, min_y - 25, info_text)
 
     def draw_landmark_labels(self, landmarks):
         """Не используется в YOLO, оставлено для совместимости"""
@@ -351,52 +378,44 @@ class OverlayWindow:
             print(f"Error drawing crosshair: {str(e)}")
 
     def draw_following_status(self, cursor_controller):
-        """Рисует индикатор состояния следования в виде кнопки"""
         try:
             # Позиция и размеры кнопки
-            button_width = 120
-            button_height = 40
-            button_x = 570  # 100 + 450 (ширина блока таймеров) + 20 (отступ)
-            button_y = 60   # Выравниваем по верхнему краю блока таймеров
+            button_width = 240
+            button_height = 80
+            button_x = 570
+            button_y = 10
             
-            # Цвета
-            bg_color = 0x00FF00 if cursor_controller.following_enabled else 0xFF0000  # Зеленый или красный
-            text_color = 0xFFFFFF  # Белый текст
+            # Цвета для кнопки
+            button_bg_color = 0x404040  # Серый фон
+            button_border_active = cursor_controller.following_enabled and self.following_color or self.following_disabled_color
+            button_text_color = 0xFFFFFF  # Белый текст
             
             # Рисуем фон кнопки
-            brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
+            brush = win32ui.CreateBrush(win32con.BS_SOLID, button_bg_color, 0)
             self.save_dc.SelectObject(brush)
             self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
             
             # Рисуем рамку кнопки
-            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0xFFFFFF)  # Белая рамка
+            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, button_border_active)
             self.save_dc.SelectObject(pen)
             self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
             
-            # Рисуем текст
-            self.save_dc.SetTextColor(text_color)
-            status = "FOLLOWING: ON" if cursor_controller.following_enabled else "FOLLOWING: OFF"
+            # Рисуем название режима
+            self.save_dc.SetTextColor(button_text_color)
+            self.save_dc.TextOut(button_x + 10, button_y + 10, "FOLLOWING MODE")
             
-            # Центрируем текст
-            text_width = self.save_dc.GetTextExtent(status)[0]
-            text_x = button_x + (button_width - text_width) // 2
-            text_y = button_y + (button_height - 20) // 2
+            # Рисуем статус режима
+            self.save_dc.SetTextColor(button_border_active)
+            following_status = "ENABLED" if cursor_controller.following_enabled else "DISABLED"
+            self.save_dc.TextOut(button_x + 10, button_y + 30, following_status)
             
-            self.save_dc.TextOut(text_x, text_y, status)
-            
-            # Добавляем подсказку с хоткеем
-            hotkey_text = "+ :"
-            hotkey_width = self.save_dc.GetTextExtent(hotkey_text)[0]
-            hotkey_x = button_x - hotkey_width - 5  # 5 пикселей отступа от кнопки
-            self.save_dc.SetTextColor(0x00FF00)  # Зеленый цвет для подсказки
-            self.save_dc.TextOut(hotkey_x, button_y + (button_height - 20) // 2, hotkey_text)
-            
-            # Очищаем ресурсы
-            try:
-                brush.DeleteObject()
-            except:
-                pass
-            
+            # Добавляем информацию о режиме выбора цели
+            if cursor_controller.following_enabled:
+                target_mode = "TARGET MODE: NEAREST"
+            else:
+                target_mode = "TARGET MODE: LARGEST"
+                
+            self.save_dc.TextOut(button_x + 10, button_y + 50, target_mode)
         except Exception as e:
             print(f"Error drawing following status: {str(e)}")
 
@@ -500,6 +519,66 @@ class OverlayWindow:
         except Exception as e:
             print(f"Error drawing attack status: {str(e)}")
 
+    def draw_ignored_classes(self, cursor_controller):
+        """Рисует список игнорируемых типов объектов в левом углу"""
+        try:
+            # Позиция и размеры блока (переносим в левый край)
+            block_width = 250
+            line_height = 20
+            max_lines = 12  # Достаточно для отображения игнорируемых классов
+            
+            # Определяем высоту блока
+            ignored_count = len(cursor_controller.ignored_classes) if hasattr(cursor_controller, 'ignored_classes') else 0
+            block_height = min(ignored_count + 2, max_lines) * line_height + 20  # +2 для заголовка
+            block_x = 100  # Переносим в левый край
+            block_y = 300  # Ниже основной отладочной информации, сдвигаем еще ниже
+            
+            # Цвета
+            bg_color = 0x404040  # Серый фон
+            title_color = 0xFFFFFF  # Белый для заголовка
+            text_color = 0xFF0000  # Красный для игнорируемых классов
+            
+            # Рисуем фон блока
+            brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
+            self.save_dc.SelectObject(brush)
+            self.save_dc.Rectangle((block_x, block_y, block_x + block_width, block_y + block_height))
+            
+            # Рисуем рамку блока
+            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0xFFFFFF)  # Белая рамка
+            self.save_dc.SelectObject(pen)
+            self.save_dc.Rectangle((block_x, block_y, block_x + block_width, block_y + block_height))
+            
+            # Рисуем заголовок
+            self.save_dc.SetTextColor(title_color)
+            self.save_dc.TextOut(block_x + 10, block_y + 10, "IGNORED OBJECTS:")
+            
+            # Рисуем список игнорируемых классов
+            y_offset = block_y + 10 + line_height
+            
+            if hasattr(cursor_controller, 'ignored_classes') and cursor_controller.ignored_classes:
+                self.save_dc.SetTextColor(text_color)
+                for i, class_name in enumerate(cursor_controller.ignored_classes):
+                    if i >= max_lines - 2:  # -2 для заголовка
+                        # Если список слишком длинный, показываем многоточие
+                        self.save_dc.TextOut(block_x + 10, y_offset, "...")
+                        break
+                        
+                    self.save_dc.TextOut(block_x + 10, y_offset, class_name)
+                    y_offset += line_height
+            else:
+                self.save_dc.SetTextColor(text_color)
+                self.save_dc.TextOut(block_x + 10, y_offset, "None")
+                
+            # Очищаем ресурсы
+            try:
+                brush.DeleteObject()
+                pen.DeleteObject()
+            except:
+                pass
+                
+        except Exception as e:
+            print(f"Error drawing ignored classes: {str(e)}")
+
     def update_info(self, cursor_pos, target_pos, distance, movement, detected_objects=None, fps=0, perf_stats=None, speed=0, direction=0, cursor_controller=None):
         current_time = time.time()
         if current_time - self.last_update_time < self.update_interval:
@@ -513,6 +592,7 @@ class OverlayWindow:
                 self.draw_following_status(cursor_controller)
                 self.draw_mode_status(cursor_controller)
                 self.draw_attack_status(cursor_controller)
+                self.draw_ignored_classes(cursor_controller)
                 
                 # Добавляем статус информации про клавишу W и расстояние
                 try:
@@ -568,7 +648,27 @@ class OverlayWindow:
                         if self.draw_skeleton_enabled:
                             self.draw_skeleton(obj['landmarks'], obj['color'])
                         if 'box' in obj:
-                            self.draw_bounding_box(obj['box'], obj['color'])
+                            self.draw_bounding_box(obj['box'], obj['color'], obj.get('class', None), obj.get('distance', None))
+                    elif obj['type'] == 'object':
+                        if 'box' in obj:
+                            # Добавляем метку над боксом с информацией о классе и расстоянии
+                            box = obj['box']
+                            color = obj['color']
+                            
+                            # Рисуем бокс
+                            self.draw_bounding_box(box, color, obj.get('class', None), obj.get('distance', None))
+                            
+                            # Если объект является целевым, рисуем дополнительно подсветку
+                            if obj.get('is_target', False):
+                                # Рисуем дополнительную рамку для выделения цели
+                                min_x, min_y, max_x, max_y = box
+                                pen = win32ui.CreatePen(win32con.PS_SOLID, 3, 0x00FFFF)  # Голубая рамка
+                                self.save_dc.SelectObject(pen)
+                                self.save_dc.Rectangle((min_x-5, min_y-5, max_x+5, max_y+5))
+                                
+                                # Добавляем текст "TARGET"
+                                self.save_dc.SetTextColor(0x00FFFF)  # Голубой текст
+                                self.save_dc.TextOut(min_x, max_y + 10, "[TARGET]")
             
             self.save_dc.SelectObject(self.font)
             
@@ -592,7 +692,7 @@ class OverlayWindow:
                 self.save_dc.SetTextColor(cursor_controller.w_key_pressed and 0x0000FF or 0x00FF00)
                 self.save_dc.TextOut(110, 150, f"W Key: {cursor_controller.w_key_pressed and 'PRESSED' or 'RELEASED'}")
                 self.save_dc.TextOut(110, 170, f"Last Distance: {cursor_controller.last_distance:.2f}m")
-                threshold_text = f"Thresholds: Press>{2.1}m, Release<{1.9}m"
+                threshold_text = f"Thresholds: Press>{1.9}m, Release<{1.8}m"
                 self.save_dc.TextOut(110, 190, threshold_text)
             
             # Счетчики производительности
@@ -716,6 +816,9 @@ class CursorController:
         self.last_position = None
         self.last_box = None
         
+        # Список игнорируемых типов объектов (не будут выбираться в качестве цели)
+        self.ignored_classes = ['chair', 'potted plant', 'tv', 'couch', 'clock', 'book']
+        
         # Фильтры Калмана для координат рамки с более сильным сглаживанием
         self.kalman_x_min = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)  # Уменьшаем process_variance для более сильного сглаживания
         self.kalman_y_min = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)
@@ -741,7 +844,8 @@ class CursorController:
         self.distance_filter = KalmanFilter(process_variance=0.003, measurement_variance=0.05)  # Увеличиваем process_variance и уменьшаем measurement_variance для более быстрой реакции
         self.last_distance_check_time = 0
         self.distance_check_interval = 0.05  # Уменьшаем интервал проверки до 50 мс для более быстрой реакции
-        self.distance_threshold = 2.0  # Порог в метрах
+        self.distance_threshold_press = 1.9  # Порог в метрах для нажатия W
+        self.distance_threshold_release = 1.8  # Порог в метрах для отпускания W
         self.target_lost_timeout = 0.3  # Уменьшаем время до признания цели потерянной
         
         # Добавляем атрибут для отслеживания последнего расстояния
@@ -801,6 +905,22 @@ class CursorController:
         """Переключает режим атаки"""
         self.attack_enabled = not self.attack_enabled
         return True
+        
+    def toggle_class_ignore(self, class_name):
+        """Переключает игнорирование определенного типа объекта"""
+        if class_name.lower() in [cls.lower() for cls in self.ignored_classes]:
+            # Удаляем класс из списка игнорируемых (с сохранением регистра)
+            for i, cls in enumerate(self.ignored_classes):
+                if cls.lower() == class_name.lower():
+                    self.ignored_classes.pop(i)
+                    print(f"Now tracking '{class_name}' objects")
+                    break
+            return False  # Класс теперь не игнорируется
+        else:
+            # Добавляем класс в список игнорируемых
+            self.ignored_classes.append(class_name)
+            print(f"Now ignoring '{class_name}' objects")
+            return True  # Класс теперь игнорируется
         
     def handle_attack(self):
         """Обрабатывает режим атаки"""
@@ -882,25 +1002,22 @@ class CursorController:
                     return
                 if not manual_w_pressed and self.manual_key_pressed:
                     self.manual_key_pressed = False
-            except:
-                pass
-            
-            if not self.manual_key_pressed:
-                release_threshold = 1.9
-                press_threshold = 2.1
                 
-                if not self.w_key_pressed and filtered_distance > press_threshold:
-                    try:
+                # Если пользователь не нажимает W вручную и следование включено
+                if not self.manual_key_pressed:
+                    # Используем фильтрованное расстояние для более стабильного поведения
+                    # Если расстояние больше 1.9м и клавиша W не нажата - нажимаем W
+                    if filtered_distance > 1.9 and not self.w_key_pressed:
                         keyboard.press('w')
                         self.w_key_pressed = True
-                    except Exception as e:
-                        print(f"Error pressing W key: {e}")
-                elif self.w_key_pressed and filtered_distance < release_threshold:
-                    try:
+                        time.sleep(0.01)  # Небольшая пауза после нажатия
+                    # Если расстояние меньше 1.8м и клавиша W нажата - отпускаем W
+                    elif filtered_distance < 1.8 and self.w_key_pressed:
                         keyboard.release('w')
                         self.w_key_pressed = False
-                    except Exception as e:
-                        print(f"Error releasing W key: {e}")
+                        time.sleep(0.01)  # Небольшая пауза после отпускания
+            except Exception as e:
+                print(f"Error in auto W key handling: {str(e)}")
         else:
             if self.w_key_pressed and not self.manual_key_pressed:
                 try:
@@ -1375,6 +1492,102 @@ class YOLOPersonDetector:
             print(f"Error in YOLO detection: {str(e)}")
             return None
             
+    def detect_all_objects(self, frame):
+        """Обнаружение всех объектов на кадре"""
+        if frame is None or self.model is None:
+            return None
+            
+        # Запускаем детекцию
+        try:
+            # Масштабируем кадр до меньшего размера для ускорения
+            original_height, original_width = frame.shape[:2]
+            target_width = 640
+            target_height = int(original_height * (target_width / original_width))
+            resized_frame = cv2.resize(frame, (target_width, target_height))
+            
+            # Не ограничиваем классы, чтобы обнаружить все объекты
+            results = self.model(resized_frame, conf=self.conf, device="cpu")
+            self.last_results = results
+            self.last_frame = frame
+            
+            return results
+        except Exception as e:
+            print(f"Error in YOLO all-objects detection: {str(e)}")
+            return None
+            
+    def get_all_objects(self, results=None):
+        """
+        Получает рамки всех обнаруженных объектов
+        
+        Returns:
+            list: список объектов с информацией о типе, местоположении и размере
+        """
+        if results is None:
+            results = self.last_results
+            
+        if results is None or len(results) == 0:
+            return []
+            
+        # Словарь имен классов COCO для YOLOv8
+        coco_classes = {
+            0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 4: 'airplane', 5: 'bus', 
+            6: 'train', 7: 'truck', 8: 'boat', 9: 'traffic light', 10: 'fire hydrant', 
+            11: 'stop sign', 12: 'parking meter', 13: 'bench', 14: 'bird', 15: 'cat', 
+            16: 'dog', 17: 'horse', 18: 'sheep', 19: 'cow', 20: 'elephant', 21: 'bear', 
+            22: 'zebra', 23: 'giraffe', 24: 'backpack', 25: 'umbrella', 26: 'handbag', 
+            27: 'tie', 28: 'suitcase', 29: 'frisbee', 30: 'skis', 31: 'snowboard', 
+            32: 'sports ball', 33: 'kite', 34: 'baseball bat', 35: 'baseball glove', 
+            36: 'skateboard', 37: 'surfboard', 38: 'tennis racket', 39: 'bottle', 
+            40: 'wine glass', 41: 'cup', 42: 'fork', 43: 'knife', 44: 'spoon', 
+            45: 'bowl', 46: 'banana', 47: 'apple', 48: 'sandwich', 49: 'orange', 
+            50: 'broccoli', 51: 'carrot', 52: 'hot dog', 53: 'pizza', 54: 'donut', 
+            55: 'cake', 56: 'chair', 57: 'couch', 58: 'potted plant', 59: 'bed', 
+            60: 'dining table', 61: 'toilet', 62: 'tv', 63: 'laptop', 64: 'mouse', 
+            65: 'remote', 66: 'keyboard', 67: 'cell phone', 68: 'microwave', 
+            69: 'oven', 70: 'toaster', 71: 'sink', 72: 'refrigerator', 73: 'book', 
+            74: 'clock', 75: 'vase', 76: 'scissors', 77: 'teddy bear', 78: 'hair drier', 
+            79: 'toothbrush'
+        }
+            
+        # Находим все объекты
+        objects = []
+        for r in results:
+            if hasattr(r, 'boxes'):
+                for box in r.boxes:
+                    class_id = int(box.cls[0])
+                    class_name = coco_classes.get(class_id, f'Unknown ({class_id})')
+                    
+                    # Получаем координаты в процентах от размера кадра (0-1)
+                    # Это позволяет масштабировать их обратно к оригинальному размеру
+                    xyxy_normalized = box.xyxyn[0].tolist() 
+                    
+                    # Если у нас есть оригинальный кадр, масштабируем координаты
+                    if self.last_frame is not None:
+                        height, width = self.last_frame.shape[:2]
+                        x1 = int(xyxy_normalized[0] * width)
+                        y1 = int(xyxy_normalized[1] * height)
+                        x2 = int(xyxy_normalized[2] * width)
+                        y2 = int(xyxy_normalized[3] * height)
+                    else:
+                        # Используем абсолютные координаты, если нет оригинального кадра
+                        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                        
+                    conf = float(box.conf[0])
+                    area = (x2 - x1) * (y2 - y1)
+                    
+                    # Создаем объект с информацией
+                    objects.append({
+                        'box': (x1, y1, x2, y2),
+                        'area': area,
+                        'confidence': conf,
+                        'class_id': class_id,
+                        'class_name': class_name
+                    })
+        
+        # Сортируем по площади (от большего к меньшему)
+        objects.sort(key=lambda x: x['area'], reverse=True)
+        return objects
+            
     def get_person_box(self, results=None):
         """
         Получает рамку самого большого человека на кадре
@@ -1493,63 +1706,168 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
         if not hasattr(process_frame, "detector"):
             process_frame.detector = YOLOPersonDetector(model=yolo_model, conf=0.4)
         
-        # Запускаем детекцию
-        results = process_frame.detector.detect(frame)
+        # Запускаем детекцию всех объектов, а не только людей
+        results = process_frame.detector.detect_all_objects(frame)
         
-        # Получаем наибольший бокс с человеком
-        box = process_frame.detector.get_person_box(results)
+        # Получаем все объекты
+        all_objects = process_frame.detector.get_all_objects(results)
         
         perf_monitor.stop('detection')
         
         # Список для хранения всех найденных объектов
         detected_objects = []
         target_x, target_y, target_distance, speed, direction = None, None, None, 0.0, 0.0
+        target_box = None
         
-        # Обрабатываем результаты распознавания
-        if box:
-            #print("Person detected")
-            try:
-                # Получаем 3D позицию цели
-                target_x, target_y, target_distance, speed, direction = process_frame.detector.calculate_3d_position(
-                    box,
-                    screen_width,
+        # Если найдены объекты, обработаем их
+        if all_objects:
+            # Добавляем все объекты в список объектов для отображения
+            for obj in all_objects:
+                obj_box = obj['box']
+                obj_class = obj['class_name']
+                
+                # Вычисляем 3D позицию объекта
+                obj_x, obj_y, obj_distance, obj_speed, obj_direction = process_frame.detector.calculate_3d_position(
+                    obj_box, 
+                    screen_width, 
                     screen_height
                 )
                 
-                # Добавляем человека в список объектов
+                # Определяем цвет в зависимости от класса
+                color_map = {
+                    'person': (0, 255, 0),  # Зеленый для людей
+                    'car': (0, 0, 255),     # Красный для машин
+                    'dog': (255, 255, 0),   # Голубой для собак
+                    'cat': (255, 0, 255),   # Розовый для кошек
+                }
+                color = color_map.get(obj_class.lower(), (255, 255, 255))  # Белый для остальных
+                
+                # Сохраняем информацию об объекте
                 detected_objects.append({
-                    'type': 'body',
-                    'color': (0, 255, 0),
-                    'box': box
+                    'type': 'object',
+                    'class': obj_class,
+                    'color': color,
+                    'box': obj_box,
+                    'distance': obj_distance,
+                    'position': (obj_x, obj_y)
                 })
-            except Exception as e:
-                print(f"Error processing detection: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                box = None  # Сбрасываем box при ошибке
+            
+            # Определяем целевой объект в зависимости от режима
+            if cursor_controller.following_enabled:
+                # Режим следования за ближайшим объектом
+                # Фильтруем объекты, исключая те, которые находятся в списке игнорируемых
+                valid_objects = [obj for obj in detected_objects 
+                               if obj['class'].lower() not in [cls.lower() for cls in cursor_controller.ignored_classes]]
+                
+                if valid_objects:
+                    # Выбираем ближайший из допустимых объектов
+                    nearest_object = min(valid_objects, key=lambda obj: obj['distance'])
+                    target_box = nearest_object['box']
+                    target_x, target_y = nearest_object['position']
+                    target_distance = nearest_object['distance']
+                    target_class = nearest_object['class']
+                    
+                    # Отмечаем ближайший объект как целевой
+                    for obj in detected_objects:
+                        if obj['box'] == target_box:
+                            obj['is_target'] = True
+                        else:
+                            obj['is_target'] = False
+                else:
+                    # Нет допустимых объектов
+                    target_box = None
+                    target_x, target_y, target_distance = None, None, None
+            else:
+                # Фильтруем объекты, исключая те, которые находятся в списке игнорируемых
+                valid_objects = [obj for obj in detected_objects 
+                               if obj['class'].lower() not in [cls.lower() for cls in cursor_controller.ignored_classes]]
+                
+                if not valid_objects:
+                    # Нет допустимых объектов
+                    target_box = None
+                    target_x, target_y, target_distance = None, None, None
+                else:
+                    # Если следование отключено, смотрим на самый большой объект (человека, если есть)
+                    people = [obj for obj in valid_objects if obj['class'].lower() == 'person']
+                    if people:
+                        # Находим самого большого человека по площади бокса
+                        largest_person = max(people, key=lambda obj: 
+                            (obj['box'][2] - obj['box'][0]) * (obj['box'][3] - obj['box'][1]))
+                        
+                        target_box = largest_person['box']
+                        target_x, target_y = largest_person['position']
+                        target_distance = largest_person['distance']
+                        target_class = largest_person['class']
+                        
+                        # Отмечаем самого большого человека как целевой
+                        for obj in detected_objects:
+                            if obj['box'] == target_box:
+                                obj['is_target'] = True
+                            else:
+                                obj['is_target'] = False
+                    elif valid_objects:
+                        # Если людей нет, берем самый большой допустимый объект
+                        largest_object = max(valid_objects, key=lambda obj: 
+                            (obj['box'][2] - obj['box'][0]) * (obj['box'][3] - obj['box'][1]))
+                        
+                        target_box = largest_object['box']
+                        target_x, target_y = largest_object['position']
+                        target_distance = largest_object['distance']
+                        target_class = largest_object['class']
+                        
+                        # Отмечаем самый большой объект как целевой
+                        for obj in detected_objects:
+                            if obj['box'] == target_box:
+                                obj['is_target'] = True
+                            else:
+                                obj['is_target'] = False
         else:
-            #print("No person detected")
+            # Нет объектов
             cursor_controller.last_box = None
-            box = None
+            target_box = None
         
         # Важно: всегда вызываем handle_auto_movement, передавая текущее расстояние и box (или None)
-        cursor_controller.handle_auto_movement(target_distance, box)
+        cursor_controller.handle_auto_movement(target_distance, target_box)
         
         # Отрисовка результатов и перемещение курсора
-        if box and target_x is not None and target_y is not None:
+        if target_box and target_x is not None and target_y is not None:
             perf_monitor.start('cursor')
             cursor_x, cursor_y = cursor_controller.move_cursor(target_x, target_y)
             perf_monitor.stop('cursor')
             
-            # Рисуем рамку
+            # Рисуем рамки объектов в окне отладки
             perf_monitor.start('drawing')
-            min_x, min_y, max_x, max_y = box
-            cv2.rectangle(frame, (min_x, min_y), (max_x, max_y), (0, 255, 0), 2)
             
-            # Рисуем центр объекта
-            center_x = (min_x + max_x) // 2
-            center_y = (min_y + max_y) // 2
-            cv2.circle(frame, (center_x, center_y), 5, (0, 255, 255), -1)
+            # Рисуем все обнаруженные объекты
+            for obj in detected_objects:
+                box = obj['box']
+                color = obj['color']
+                
+                # Преобразуем цвет из BGR в RGB
+                display_color = (color[2], color[1], color[0])
+                
+                # Рисуем рамку
+                cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 2)
+                
+                # Рисуем информацию о классе и расстоянии
+                class_name = obj['class']
+                distance = obj['distance']
+                text = f"{class_name}: {distance:.2f}m"
+                
+                # Добавляем текст о выбранной цели
+                if obj.get('is_target', False):
+                    text += " [TARGET]"
+                    # Рисуем более толстую рамку для целевого объекта
+                    cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 4)
+                
+                # Размещаем текст над рамкой
+                text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+                text_x = box[0]
+                text_y = box[1] - 10 if box[1] > 30 else box[1] + 30
+                cv2.rectangle(frame, (text_x, text_y - text_size[1] - 10), 
+                              (text_x + text_size[0] + 10, text_y), display_color, -1)
+                cv2.putText(frame, text, (text_x + 5, text_y - 5), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             
             # Рисуем курсор
             cv2.circle(frame, (cursor_x, cursor_y), 5, (0, 0, 255), -1)
@@ -1634,6 +1952,10 @@ def main():
         print("Press 'Backspace' to toggle attack mode")
         print("Press 'F1' to exit")
         print("Press '.' to start/stop recording")
+        
+        # Сообщаем об игнорируемых классах
+        if cursor_controller.ignored_classes:
+            print("Currently ignoring: " + ', '.join(cursor_controller.ignored_classes))
         
         while True:
             try:
