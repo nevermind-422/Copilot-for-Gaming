@@ -19,7 +19,7 @@ import random
 from threading import Thread
 from ultralytics import YOLO
 
-# Версия 0.023
+# Версия 0.024
 # - Заменена система распознавания с MediaPipe на YOLOv8 для улучшения дальности детекции
 # - Оптимизирована производительность за счет масштабирования входного кадра
 # - Улучшена обработка нескольких людей в кадре с выбором самого большого
@@ -28,6 +28,7 @@ from ultralytics import YOLO
 # - Добавлен статический список игнорируемых объектов
 # - Добавлено отображение информации о типе объекта и расстоянии
 # - Улучшено расположение элементов на экране
+# - Добавлено название "Reign of Bots" и версия в заголовке
 
 # Настраиваем логирование
 logging.basicConfig(level=logging.INFO)
@@ -383,8 +384,8 @@ class OverlayWindow:
             # Позиция и размеры кнопки
             button_width = 240
             button_height = 80
-            button_x = 570
-            button_y = 10
+            button_x = 460  # Сдвигаем ближе к рамке отладочной информации
+            button_y = 50  # Располагаем рядом с отладочной информацией
             
             # Цвета для кнопки
             button_bg_color = 0x404040  # Серый фон
@@ -426,8 +427,8 @@ class OverlayWindow:
             # Позиция и размеры кнопки
             button_width = 120
             button_height = 40
-            button_x = 570  # Та же x-координата, что и у кнопки following
-            button_y = 110  # Располагаем под кнопкой following
+            button_x = 460  # Сдвигаем ближе к рамке отладочной информации
+            button_y = 140  # Размещаем под кнопкой following
             
             # Цвета
             bg_color = 0x00FFFF if cursor_controller.relative_mode else 0x00FF00  # Голубой для относительного, зеленый для абсолютного
@@ -476,8 +477,8 @@ class OverlayWindow:
             # Позиция и размеры кнопки
             button_width = 120
             button_height = 40
-            button_x = 570  # Та же x-координата, что и у других кнопок
-            button_y = 160  # Располагаем под кнопкой режима
+            button_x = 460  # Сдвигаем ближе к рамке отладочной информации
+            button_y = 190  # Располагаем под кнопкой режима
             
             # Цвета
             bg_color = 0xFF0000 if cursor_controller.attack_enabled else 0x404040  # Красный для активного, серый для неактивного
@@ -532,7 +533,7 @@ class OverlayWindow:
             ignored_count = len(cursor_controller.ignored_classes) if hasattr(cursor_controller, 'ignored_classes') else 0
             block_height = min(ignored_count + 2, max_lines) * line_height + 20  # +2 для заголовка
             block_x = 100  # Переносим в левый край
-            block_y = 300  # Ниже основной отладочной информации, сдвигаем еще ниже
+            block_y = 450  # Опускаем еще ниже для лучшей видимости
             
             # Цвета
             bg_color = 0x404040  # Серый фон
@@ -588,6 +589,57 @@ class OverlayWindow:
         try:
             self.save_dc.FillSolidRect((0, 0, 1920, 1080), 0x000000)
             
+            # Добавляем название программы и версию в центре верхней части экрана
+            title_text = "Reign of Bots"
+            version_text = "v0.024"
+            
+            # Используем более крупный шрифт для заголовка
+            title_font = win32ui.CreateFont({
+                'name': 'Consolas',
+                'height': 36,
+                'weight': win32con.FW_BOLD,
+                'charset': win32con.ANSI_CHARSET
+            })
+            
+            # Рисуем заголовок
+            self.save_dc.SelectObject(title_font)
+            title_width = self.save_dc.GetTextExtent(title_text)[0]
+            title_height = 36
+            
+            # Фон для заголовка
+            title_bg_x = (self.screen_width - title_width) // 2 - 20
+            title_bg_y = 20
+            title_bg_width = title_width + 40
+            title_bg_height = title_height + 20
+            
+            # Рисуем фон заголовка
+            self.save_dc.FillSolidRect((title_bg_x, title_bg_y, title_bg_x + title_bg_width, title_bg_y + title_bg_height), 0x404040)
+            
+            # Рисуем рамку
+            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0x00FFFF)  # Голубая рамка
+            self.save_dc.SelectObject(pen)
+            self.save_dc.Rectangle((title_bg_x, title_bg_y, title_bg_x + title_bg_width, title_bg_y + title_bg_height))
+            
+            # Рисуем сам текст заголовка
+            self.save_dc.SetTextColor(0x00FFFF)  # Голубой текст
+            self.save_dc.TextOut((self.screen_width - title_width) // 2, title_bg_y + 10, title_text)
+            
+            # Добавляем версию под заголовком
+            version_font = win32ui.CreateFont({
+                'name': 'Consolas',
+                'height': 16,
+                'weight': win32con.FW_NORMAL,
+                'charset': win32con.ANSI_CHARSET
+            })
+            
+            self.save_dc.SelectObject(version_font)
+            version_width = self.save_dc.GetTextExtent(version_text)[0]
+            self.save_dc.SetTextColor(0xFFFFFF)  # Белый текст для версии
+            self.save_dc.TextOut((self.screen_width - version_width) // 2, title_bg_y + title_bg_height + 5, version_text)
+            
+            # Возвращаемся к основному шрифту для остального интерфейса
+            self.save_dc.SelectObject(self.font)
+            
             if cursor_controller:
                 self.draw_crosshair(cursor_controller)
                 self.draw_following_status(cursor_controller)
@@ -600,8 +652,8 @@ class OverlayWindow:
                     # Позиция и размеры блока информации
                     info_width = 300
                     info_height = 120
-                    info_x = 570  # Та же x-координата, что и у других кнопок
-                    info_y = 210  # Располагаем под кнопками статуса
+                    info_x = 460  # Сдвигаем ближе к рамке отладочной информации
+                    info_y = 240  # Располагаем под кнопками статуса
                     
                     # Цвета для блока
                     bg_color = 0x404040  # Серый фон
