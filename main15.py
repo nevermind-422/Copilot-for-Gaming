@@ -1151,9 +1151,8 @@ class CursorController:
         print(f"Absolute: dist={distance:.1f}, dx={dx}, dy={dy}, target=({self.target_x},{self.target_y})")
         
         # Порог остановки - если достигли цели
-        stop_threshold = 5
+        stop_threshold = 2
         if distance <= stop_threshold:
-            print(f"TARGET REACHED - stopping at distance {distance:.1f}")
             return
         
         # Замедление абсолютного режима
