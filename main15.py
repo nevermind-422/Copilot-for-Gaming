@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-import mediapipe as mp
 import win32api
 import win32con
 import win32gui
@@ -18,30 +17,59 @@ import logging
 from absl import logging as absl_logging
 import random
 from threading import Thread
+from ultralytics import YOLO
+
+# Версия 0.019
+# - Заменена система распознавания с MediaPipe на YOLOv8 для улучшения дальности детекции
+# - Оптимизирована производительность за счет масштабирования входного кадра
+# - Улучшена обработка нескольких людей в кадре с выбором самого большого
 
 # Настраиваем логирование
 logging.basicConfig(level=logging.INFO)
 absl_logging.use_absl_handler()
 absl_logging.set_verbosity(absl_logging.INFO)
 
-# Инициализация MediaPipe
-print("Initializing MediaPipe...")
-mp_holistic = mp.solutions.holistic
-mp_drawing = mp.solutions.drawing_utils
-mp_drawing_styles = mp.solutions.drawing_styles
+# Отключаем CUDA в случае проблем с совместимостью
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
-# Настройки для MediaPipe
-holistic = mp_holistic.Holistic(
-    static_image_mode=False,  # Режим видео
-    model_complexity=0,       # Минимальная сложность для максимальной производительности
-    enable_segmentation=False,  # Отключаем сегментацию для производительности
-    smooth_landmarks=False,    # Отключаем сглаживание для производительности
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5,
-    refine_face_landmarks=False  # Отключаем для производительности
-)
-
-print("MediaPipe initialized successfully")
+# Загружаем YOLO модель
+print("Initializing YOLOv8...")
+yolo_model = None
+try:
+    # Проверяем наличие папки models
+    models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+    os.makedirs(models_dir, exist_ok=True)
+    
+    # Путь к модели
+    model_path = os.path.join(models_dir, "yolov8n.pt")
+    
+    # Загружаем модель если она есть
+    if os.path.exists(model_path):
+        yolo_model = YOLO(model_path)
+        # Явно указываем устройство CPU
+        yolo_model.to("cpu")
+    else:
+        # Если модели нет, скачиваем её
+        print("YOLOv8n model not found, downloading...")
+        yolo_model = YOLO("yolov8n.pt")
+        # Явно указываем устройство CPU
+        yolo_model.to("cpu")
+        # Сохраняем модель в папку models
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        yolo_model.export(format="pytorch", half=False)
+        
+    print("YOLOv8 initialized successfully on CPU")
+    
+except Exception as e:
+    print(f"Error initializing YOLOv8: {str(e)}")
+    print("Falling back to direct initialization")
+    try:
+        yolo_model = YOLO("yolov8n.pt")
+        yolo_model.to("cpu")
+        print("YOLOv8 initialized using fallback method on CPU")
+    except Exception as e2:
+        print(f"Critical error initializing YOLOv8: {str(e2)}")
+        yolo_model = None
 
 # Константы для эмуляции мыши
 MOUSEEVENTF_MOVE = 0x0001
@@ -167,30 +195,8 @@ class OverlayWindow:
         self.movement_history = deque(maxlen=10)
 
     def draw_skeleton(self, landmarks, color):
-        """Рисует скелет с помощью линий и точек"""
-        if not landmarks or not self.draw_skeleton_enabled:
-            return
-        pen = win32ui.CreatePen(win32con.PS_SOLID, 2, color[2] << 16 | color[1] << 8 | color[0])
-        self.save_dc.SelectObject(pen)
-        for connection in mp_holistic.POSE_CONNECTIONS:
-            start_point = landmarks.landmark[connection[0]]
-            end_point = landmarks.landmark[connection[1]]
-            start_x = int(start_point.x * 1920)
-            start_y = int(start_point.y * 1080)
-            end_x = int(end_point.x * 1920)
-            end_y = int(end_point.y * 1080)
-            self.save_dc.MoveTo((start_x, start_y))
-            self.save_dc.LineTo((end_x, end_y))
-            for point_x, point_y in [(start_x, start_y), (end_x, end_y)]:
-                outer_brush = win32ui.CreateBrush(win32con.BS_SOLID, color[2] << 16 | color[1] << 8 | color[0], 0)
-                self.save_dc.SelectObject(outer_brush)
-                self.save_dc.Ellipse((point_x - 5, point_y - 5, point_x + 5, point_y + 5))
-                white_brush = win32ui.CreateBrush(win32con.BS_SOLID, 0xFFFFFF, 0)
-                self.save_dc.SelectObject(white_brush)
-                self.save_dc.Ellipse((point_x - 3, point_y - 3, point_x + 3, point_y + 3))
-                yellow_brush = win32ui.CreateBrush(win32con.BS_SOLID, 0x00FFFF, 0)
-                self.save_dc.SelectObject(yellow_brush)
-                self.save_dc.Ellipse((point_x - 1, point_y - 1, point_x + 1, point_y + 1))
+        """Не используется в YOLO, оставлено для совместимости"""
+        pass
 
     def draw_movement_vector(self, cursor_pos, target_pos, speed, direction):
         """Рисует вектор движения с градиентом скорости"""
@@ -272,15 +278,8 @@ class OverlayWindow:
         self.save_dc.Ellipse((center_x - cross, center_y - cross, center_x + cross, center_y + cross))
 
     def draw_landmark_labels(self, landmarks):
-        if not landmarks:
-            return
-        for idx, landmark in enumerate(landmarks.landmark):
-            x = int(landmark.x * 1920)
-            y = int(landmark.y * 1080)
-            if hasattr(DrawingUtils, 'BODY_PARTS') and idx in DrawingUtils.BODY_PARTS:
-                label = DrawingUtils.BODY_PARTS[idx]
-                self.save_dc.SetTextColor(0xFFFFFF)
-                self.save_dc.TextOut(x + 5, y - 15, label)
+        """Не используется в YOLO, оставлено для совместимости"""
+        pass
 
     def draw_crosshair(self, cursor_controller):
         """Рисует прицел в зависимости от режима"""
@@ -780,77 +779,13 @@ class CursorController:
         self.smoothed_max_y = None
     
     def calculate_3d_position(self, landmarks, screen_width, screen_height):
-        """Вычисляет экранную позицию цели и примерное расстояние в метрах
-           на основе размера рамки с учетом законов перспективы"""
-        # Получаем экранные координаты плеч для центра цели
-        lmk = landmarks.landmark
-        x1, y1 = int(lmk[mp_holistic.PoseLandmark.LEFT_SHOULDER].x * screen_width), \
-                 int(lmk[mp_holistic.PoseLandmark.LEFT_SHOULDER].y * screen_height)
-        x2, y2 = int(lmk[mp_holistic.PoseLandmark.RIGHT_SHOULDER].x * screen_width), \
-                 int(lmk[mp_holistic.PoseLandmark.RIGHT_SHOULDER].y * screen_height)
-
-        # Центр цели
-        target_x = (x1 + x2) // 2
-        target_y = (y1 + y2) // 2
-
-        # Находим крайние точки тела для расчета общего размера рамки
-        min_x = min_y = float('inf')
-        max_x = max_y = float('-inf')
-        
-        for landmark in landmarks.landmark:
-            x = int(landmark.x * screen_width)
-            y = int(landmark.y * screen_height)
-            min_x = min(min_x, x)
-            min_y = min(min_y, y)
-            max_x = max(max_x, x)
-            max_y = max(max_y, y)
-        
-        # Размеры рамки тела в пикселях
-        box_width = max_x - min_x
-        box_height = max_y - min_y
-        
-        # Вычисляем площадь рамки
-        box_area = box_width * box_height
-        screen_area = screen_width * screen_height
-        
-        # Отношение площади рамки к площади экрана
-        area_ratio = box_area / screen_area
-        
-        # Защита от деления на ноль или очень маленькие значения
-        if area_ratio < 0.0001:
-            area_ratio = 0.0001
-        
-        # Константы для калибровки
-        CALIBRATION_AREA = 1/9  # 1/3 * 1/3 экрана по площади = 1 метр
-        
-        # По законам перспективы, площадь объекта обратно пропорциональна
-        # квадрату расстояния, поэтому используем квадратный корень
-        # для восстановления линейной зависимости
-        distance = math.sqrt(CALIBRATION_AREA / area_ratio)
-        
-        # Ограничение максимального значения расстояния
-        distance = min(distance, 10.0)
-        
-        # Рассчитываем скорость и направление движения
-        now = time.time()
-        if not hasattr(self, 'last_pixel_pos'):
-            self.last_pixel_pos = (target_x, target_y)
-            self.last_pixel_time = now
-            speed = 0.0
-            direction = 0.0
-        else:
-            dt = now - self.last_pixel_time
-            if dt > 0:
-                dx, dy = target_x - self.last_pixel_pos[0], target_y - self.last_pixel_pos[1]
-                speed = math.hypot(dx, dy) / dt
-                direction = math.atan2(dy, dx)
-                self.last_pixel_pos = (target_x, target_y)
-                self.last_pixel_time = now
-            else:
-                speed = 0.0
-                direction = 0.0
-
-        return target_x, target_y, distance, speed, direction
+        """
+        УСТАРЕВШИЙ МЕТОД. Используйте YOLOPersonDetector.calculate_3d_position вместо него.
+        Оставлен для обратной совместимости.
+        """
+        print("Warning: Calling deprecated method CursorController.calculate_3d_position")
+        # Возвращаем пустые значения
+        return None, None, None, 0.0, 0.0
 
     def toggle_following(self):
         """Переключает режим следования за целью"""
@@ -1207,80 +1142,21 @@ class VideoRecorder:
         self.stop_recording()
 
 class DrawingUtils:
-    # Словарь с названиями частей тела
-    BODY_PARTS = {
-        mp_holistic.PoseLandmark.NOSE: "NOSE",
-        mp_holistic.PoseLandmark.LEFT_EYE: "L_EYE",
-        mp_holistic.PoseLandmark.RIGHT_EYE: "R_EYE",
-        mp_holistic.PoseLandmark.LEFT_SHOULDER: "L_SHOULDER",
-        mp_holistic.PoseLandmark.RIGHT_SHOULDER: "R_SHOULDER",
-        mp_holistic.PoseLandmark.LEFT_ELBOW: "L_ELBOW",
-        mp_holistic.PoseLandmark.RIGHT_ELBOW: "R_ELBOW",
-        mp_holistic.PoseLandmark.LEFT_WRIST: "L_WRIST",
-        mp_holistic.PoseLandmark.RIGHT_WRIST: "R_WRIST",
-        mp_holistic.PoseLandmark.LEFT_HIP: "L_HIP",
-        mp_holistic.PoseLandmark.RIGHT_HIP: "R_HIP",
-        mp_holistic.PoseLandmark.LEFT_KNEE: "L_KNEE",
-        mp_holistic.PoseLandmark.RIGHT_KNEE: "R_KNEE",
-        mp_holistic.PoseLandmark.LEFT_ANKLE: "L_ANKLE",
-        mp_holistic.PoseLandmark.RIGHT_ANKLE: "R_ANKLE"
-    }
+    # Словарь с названиями частей тела (не используется с YOLO)
+    BODY_PARTS = {}
 
     @staticmethod
     def draw_landmarks(frame, landmarks, connections, color, thickness=2, circle_radius=4):
-        """Рисует точки и соединения между ними с подписями"""
-        if not landmarks:
-            return
-
-        # Рисуем точки и подписи
-        for idx, landmark in enumerate(landmarks.landmark):
-            x = int(landmark.x * frame.shape[1])
-            y = int(landmark.y * frame.shape[0])
-            
-            # Рисуем белую точку
-            cv2.circle(frame, (x, y), circle_radius, (255, 255, 255), -1)
-            # Рисуем цветную обводку
-            cv2.circle(frame, (x, y), circle_radius + 1, color, 1)
-            
-            # Добавляем подпись, если это известная часть тела
-            if idx in DrawingUtils.BODY_PARTS:
-                label = DrawingUtils.BODY_PARTS[idx]
-                # Рисуем черный фон для текста
-                (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                cv2.rectangle(frame, (x - 2, y - h - 10), (x + w + 2, y - 10), (0, 0, 0), -1)
-                # Рисуем белый текст
-                cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
-        # Рисуем соединения
-        for connection in connections:
-            start_point = landmarks.landmark[connection[0]]
-            end_point = landmarks.landmark[connection[1]]
-            
-            start_x = int(start_point.x * frame.shape[1])
-            start_y = int(start_point.y * frame.shape[0])
-            end_x = int(end_point.x * frame.shape[1])
-            end_y = int(end_point.y * frame.shape[0])
-            
-            # Рисуем линию с градиентом
-            cv2.line(frame, (start_x, start_y), (end_x, end_y), color, thickness)
+        """Эта функция не используется с YOLO, оставлена для совместимости"""
+        pass
 
     @staticmethod
-    def draw_bounding_box(frame, landmarks, color, padding=10, thickness=2):
+    def draw_bounding_box(frame, box, color, padding=10, thickness=2):
         """Рисует улучшенную рамку вокруг набора точек"""
-        if not landmarks:
+        if not box:
             return None
-
-        min_x = min_y = float('inf')
-        max_x = max_y = float('-inf')
-
-        # Находим границы
-        for landmark in landmarks.landmark:
-            x = int(landmark.x * frame.shape[1])
-            y = int(landmark.y * frame.shape[0])
-            min_x = min(min_x, x)
-            min_y = min(min_y, y)
-            max_x = max(max_x, x)
-            max_y = max(max_y, y)
+            
+        min_x, min_y, max_x, max_y = box
 
         # Добавляем отступ
         min_x = max(0, min_x - padding)
@@ -1454,6 +1330,145 @@ def capture_screen():
         win32gui.ReleaseDC(win32gui.GetDesktopWindow(), hwindc)
         win32gui.DeleteObject(bmp.GetHandle())
 
+class YOLOPersonDetector:
+    """Класс для обнаружения людей с помощью YOLOv8"""
+    def __init__(self, model=None, conf=0.5):
+        self.model = model
+        self.conf = conf
+        self.last_frame = None
+        self.last_results = None
+        self.lock = Thread()
+        
+        # Убедимся, что модель работает на CPU
+        if self.model:
+            try:
+                self.model.to("cpu")
+            except Exception as e:
+                print(f"Warning: Could not set device to CPU: {str(e)}")
+                
+        print("YOLOPersonDetector initialized")
+        
+    def detect(self, frame):
+        """Обнаружение людей на кадре"""
+        if frame is None or self.model is None:
+            return None
+            
+        # Запускаем детекцию
+        try:
+            # Масштабируем кадр до меньшего размера для ускорения
+            original_height, original_width = frame.shape[:2]
+            target_width = 640
+            target_height = int(original_height * (target_width / original_width))
+            resized_frame = cv2.resize(frame, (target_width, target_height))
+            
+            # Явно указываем устройство CPU
+            results = self.model(resized_frame, conf=self.conf, classes=0, device="cpu")  # class 0 = person
+            self.last_results = results
+            self.last_frame = frame
+            
+            # Отладочная информация о размере и времени
+            #for r in results:
+            #    print(f"Detection time: {r.speed['inference']:.1f}ms, shape: {resized_frame.shape}")
+                
+            return results
+        except Exception as e:
+            print(f"Error in YOLO detection: {str(e)}")
+            return None
+            
+    def get_person_box(self, results=None):
+        """
+        Получает рамку самого большого человека на кадре
+        
+        Returns:
+            tuple: (min_x, min_y, max_x, max_y) или None если люди не обнаружены
+        """
+        if results is None:
+            results = self.last_results
+            
+        if results is None or len(results) == 0:
+            return None
+            
+        # Находим все боксы людей
+        boxes = []
+        for r in results:
+            if hasattr(r, 'boxes'):
+                for box in r.boxes:
+                    if box.cls[0] == 0:  # класс 0 - человек
+                        # Получаем координаты в процентах от размера кадра (0-1)
+                        # Это позволяет масштабировать их обратно к оригинальному размеру
+                        xyxy_normalized = box.xyxyn[0].tolist() 
+                        
+                        # Если у нас есть оригинальный кадр, масштабируем координаты
+                        if self.last_frame is not None:
+                            height, width = self.last_frame.shape[:2]
+                            x1 = int(xyxy_normalized[0] * width)
+                            y1 = int(xyxy_normalized[1] * height)
+                            x2 = int(xyxy_normalized[2] * width)
+                            y2 = int(xyxy_normalized[3] * height)
+                        else:
+                            # Используем абсолютные координаты, если нет оригинального кадра
+                            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                            
+                        conf = float(box.conf[0])
+                        area = (x2 - x1) * (y2 - y1)
+                        boxes.append((x1, y1, x2, y2, area, conf))
+        
+        if not boxes:
+            return None
+            
+        # Выбираем бокс с наибольшей площадью
+        boxes.sort(key=lambda x: x[4], reverse=True)
+        x1, y1, x2, y2, _, _ = boxes[0]
+        
+        return (x1, y1, x2, y2)
+    
+    def calculate_3d_position(self, box, screen_width, screen_height):
+        """
+        Вычисляет экранную позицию цели и примерное расстояние в метрах
+        на основе размера рамки с учетом законов перспективы
+        """
+        if box is None:
+            return None, None, None, 0.0, 0.0
+            
+        min_x, min_y, max_x, max_y = box
+        
+        # Центр цели
+        target_x = (min_x + max_x) // 2
+        target_y = (min_y + max_y) // 2
+        
+        # Размеры рамки тела в пикселях
+        box_width = max_x - min_x
+        box_height = max_y - min_y
+        
+        # Вычисляем площадь рамки
+        box_area = box_width * box_height
+        screen_area = screen_width * screen_height
+        
+        # Отношение площади рамки к площади экрана
+        area_ratio = box_area / screen_area
+        
+        # Защита от деления на ноль или очень маленькие значения
+        if area_ratio < 0.0001:
+            area_ratio = 0.0001
+        
+        # Константы для калибровки
+        CALIBRATION_AREA = 1/9  # 1/3 * 1/3 экрана по площади = 1 метр
+        
+        # По законам перспективы, площадь объекта обратно пропорциональна
+        # квадрату расстояния, поэтому используем квадратный корень
+        # для восстановления линейной зависимости
+        distance = math.sqrt(CALIBRATION_AREA / area_ratio)
+        
+        # Ограничение максимального значения расстояния
+        distance = min(distance, 10.0)
+        
+        # Расчет скорости и направления не имеет сильного смысла
+        # для отдельного кадра, поэтому возвращаем нули
+        speed = 0.0
+        direction = 0.0
+        
+        return target_x, target_y, distance, speed, direction
+
 def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
     try:
         # Минимизируем логирование для лучшей производительности
@@ -1471,79 +1486,70 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
         screen_width = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
         screen_height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
         
-        # Конвертируем в RGB для MediaPipe
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Получаем результаты от MediaPipe
+        # Детекция с помощью YOLO
         perf_monitor.start('detection')
-        results = holistic.process(rgb_frame)
+        
+        # Инициализируем детектор при первом вызове
+        if not hasattr(process_frame, "detector"):
+            process_frame.detector = YOLOPersonDetector(model=yolo_model, conf=0.4)
+        
+        # Запускаем детекцию
+        results = process_frame.detector.detect(frame)
+        
+        # Получаем наибольший бокс с человеком
+        box = process_frame.detector.get_person_box(results)
+        
         perf_monitor.stop('detection')
         
         # Список для хранения всех найденных объектов
         detected_objects = []
         target_x, target_y, target_distance, speed, direction = None, None, None, 0.0, 0.0
-        box = None  # Инициализируем box как None
         
         # Обрабатываем результаты распознавания
-        if results.pose_landmarks:
-            #print("Pose landmarks detected")
+        if box:
+            #print("Person detected")
             try:
                 # Получаем 3D позицию цели
-                target_x, target_y, target_distance, speed, direction = cursor_controller.calculate_3d_position(
-                    results.pose_landmarks,
+                target_x, target_y, target_distance, speed, direction = process_frame.detector.calculate_3d_position(
+                    box,
                     screen_width,
                     screen_height
                 )
                 
-                # Создаем рамку для объекта
-                box = DrawingUtils.draw_bounding_box(
-                    frame,
-                    results.pose_landmarks,
-                    (0, 255, 0),
-                    20,
-                    2
-                )
-                
-                # Сохраняем рамку в контроллере
-                cursor_controller.last_box = box
-                
-                # Добавляем тело в список объектов
+                # Добавляем человека в список объектов
                 detected_objects.append({
                     'type': 'body',
-                    'landmarks': results.pose_landmarks,
                     'color': (0, 255, 0),
                     'box': box
                 })
             except Exception as e:
-                print(f"Error processing pose landmarks: {str(e)}")
+                print(f"Error processing detection: {str(e)}")
                 import traceback
                 traceback.print_exc()
                 box = None  # Сбрасываем box при ошибке
         else:
-            #print("No pose landmarks detected")
+            #print("No person detected")
             cursor_controller.last_box = None
             box = None
         
         # Важно: всегда вызываем handle_auto_movement, передавая текущее расстояние и box (или None)
         cursor_controller.handle_auto_movement(target_distance, box)
         
-        # Перемещаем курсор к цели, только если найдены ландмарки
-        if target_x is not None and target_y is not None:
+        # Отрисовка результатов и перемещение курсора
+        if box and target_x is not None and target_y is not None:
             perf_monitor.start('cursor')
             cursor_x, cursor_y = cursor_controller.move_cursor(target_x, target_y)
             perf_monitor.stop('cursor')
             
-            # Рисуем только необходимые элементы
+            # Рисуем рамку
             perf_monitor.start('drawing')
-            # Рисуем рамку вокруг тела
-            if detected_objects and detected_objects[0]['box']:
-                min_x, min_y, max_x, max_y = detected_objects[0]['box']
-                cv2.rectangle(frame, (min_x, min_y), (max_x, max_y), (0, 255, 0), 2)
-                
-                # Рисуем центр объекта
-                center_x = (min_x + max_x) // 2
-                center_y = (min_y + max_y) // 2
-                cv2.circle(frame, (center_x, center_y), 5, (0, 255, 255), -1)
+            min_x, min_y, max_x, max_y = box
+            cv2.rectangle(frame, (min_x, min_y), (max_x, max_y), (0, 255, 0), 2)
+            
+            # Рисуем центр объекта
+            center_x = (min_x + max_x) // 2
+            center_y = (min_y + max_y) // 2
+            cv2.circle(frame, (center_x, center_y), 5, (0, 255, 255), -1)
             
             # Рисуем курсор
             cv2.circle(frame, (cursor_x, cursor_y), 5, (0, 0, 255), -1)
