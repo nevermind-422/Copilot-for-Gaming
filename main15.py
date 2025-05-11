@@ -1,3 +1,4 @@
+import argparse
 import cv2
 import numpy as np
 import win32api
@@ -19,7 +20,7 @@ import random
 from threading import Thread
 from ultralytics import YOLO
 
-# Версия 0.024
+# Версия 0.025
 # - Заменена система распознавания с MediaPipe на YOLOv8 для улучшения дальности детекции
 # - Оптимизирована производительность за счет масштабирования входного кадра
 # - Улучшена обработка нескольких людей в кадре с выбором самого большого
@@ -29,6 +30,57 @@ from ultralytics import YOLO
 # - Добавлено отображение информации о типе объекта и расстоянии
 # - Улучшено расположение элементов на экране
 # - Добавлено название "Reign of Bots" и версия в заголовке
+# - Исправлены утечки ресурсов GDI, улучшена работа прозрачного окна
+# - Оптимизирована производительность отрисовки интерфейса
+
+# Словарь имен классов COCO для YOLOv8
+COCO_CLASSES = {
+    0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 4: 'airplane', 5: 'bus', 
+    6: 'train', 7: 'truck', 8: 'boat', 9: 'traffic light', 10: 'fire hydrant', 
+    11: 'stop sign', 12: 'parking meter', 13: 'bench', 14: 'bird', 15: 'cat', 
+    16: 'dog', 17: 'horse', 18: 'sheep', 19: 'cow', 20: 'elephant', 21: 'bear', 
+    22: 'zebra', 23: 'giraffe', 24: 'backpack', 25: 'umbrella', 26: 'handbag', 
+    27: 'tie', 28: 'suitcase', 29: 'frisbee', 30: 'skis', 31: 'snowboard', 
+    32: 'sports ball', 33: 'kite', 34: 'baseball bat', 35: 'baseball glove', 
+    36: 'skateboard', 37: 'surfboard', 38: 'tennis racket', 39: 'bottle', 
+    40: 'wine glass', 41: 'cup', 42: 'fork', 43: 'knife', 44: 'spoon', 
+    45: 'bowl', 46: 'banana', 47: 'apple', 48: 'sandwich', 49: 'orange', 
+    50: 'broccoli', 51: 'carrot', 52: 'hot dog', 53: 'pizza', 54: 'donut', 
+    55: 'cake', 56: 'chair', 57: 'couch', 58: 'potted plant', 59: 'bed', 
+    60: 'dining table', 61: 'toilet', 62: 'tv', 63: 'laptop', 64: 'mouse', 
+    65: 'remote', 66: 'keyboard', 67: 'cell phone', 68: 'microwave', 
+    69: 'oven', 70: 'toaster', 71: 'sink', 72: 'refrigerator', 73: 'book', 
+    74: 'clock', 75: 'vase', 76: 'scissors', 77: 'teddy bear', 78: 'hair drier', 
+    79: 'toothbrush'
+}
+
+# Список игнорируемых типов объектов по умолчанию (не будут выбираться в качестве цели)
+# Включаем в игнорирование все, кроме: person(0), dog(16), cat(15), bird(14), 
+# horse(17), sheep(18), cow(19), elephant(20), bear(21), zebra(22), giraffe(23)
+DEFAULT_IGNORED_CLASSES = [
+    'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 
+    'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 
+    'backpack', 'umbrella', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 
+    'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 
+    'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 
+    'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange', 
+    'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 
+    'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv', 
+    'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave', 
+    'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 
+    'scissors', 'teddy bear', 'hair drier', 'toothbrush'
+]
+
+# Парсим аргументы командной строки
+parser = argparse.ArgumentParser(description='Reign of Bots - Screen Detection')
+parser.add_argument('--no-cursor-control', action='store_true', 
+                    help='Disable cursor control features to avoid errors')
+args = parser.parse_args()
+
+# Отключение управления курсором
+DISABLE_CURSOR_CONTROL = args.no_cursor_control
+if DISABLE_CURSOR_CONTROL:
+    print("Cursor control is disabled. The program will not move the cursor.")
 
 # Настраиваем логирование
 logging.basicConfig(level=logging.INFO)
@@ -49,22 +101,26 @@ try:
     # Путь к модели
     model_path = os.path.join(models_dir, "yolov8n.pt")
     
+    # Явно используем CPU
+    device = "cpu"
+    print(f"Using device: {device} (CUDA disabled)")
+    
     # Загружаем модель если она есть
     if os.path.exists(model_path):
         yolo_model = YOLO(model_path)
-        # Явно указываем устройство CPU
-        yolo_model.to("cpu")
+        # Явно указываем устройство
+        yolo_model.to(device)
     else:
         # Если модели нет, скачиваем её
         print("YOLOv8n model not found, downloading...")
         yolo_model = YOLO("yolov8n.pt")
-        # Явно указываем устройство CPU
-        yolo_model.to("cpu")
+        # Явно указываем устройство
+        yolo_model.to(device)
         # Сохраняем модель в папку models
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
         yolo_model.export(format="pytorch", half=False)
         
-    print("YOLOv8 initialized successfully on CPU")
+    print(f"YOLOv8 initialized successfully on {device}")
     
 except Exception as e:
     print(f"Error initializing YOLOv8: {str(e)}")
@@ -152,23 +208,27 @@ class OverlayWindow:
             0, 0, 0, None
         )
         
-        # Устанавливаем прозрачность окна
-        win32gui.SetLayeredWindowAttributes(
-            self.hwnd,
-            0,
-            128,  # 50% прозрачности
-            win32con.LWA_ALPHA
-        )
+        # Устанавливаем размеры экрана
+        self.screen_width = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
+        self.screen_height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
         
-        # Создаем DC и битмап
+        # Создаем DC для окна
         self.hdc = win32gui.GetDC(self.hwnd)
         self.mfc_dc = win32ui.CreateDCFromHandle(self.hdc)
+        
+        # Создаем совместимый DC для рисования
         self.save_dc = self.mfc_dc.CreateCompatibleDC()
         
-        # Создаем битмап
+        # Создаем 32-битный битмап с альфа-каналом
         self.bitmap = win32ui.CreateBitmap()
-        self.bitmap.CreateCompatibleBitmap(self.mfc_dc, 1920, 1080)
+        self.bitmap.CreateCompatibleBitmap(self.mfc_dc, self.screen_width, self.screen_height)
         self.save_dc.SelectObject(self.bitmap)
+        
+        # Настраиваем правильные цвета и прозрачность для DC
+        self.save_dc.SetBkMode(win32con.TRANSPARENT)  # Устанавливаем прозрачный фон для текста
+        
+        # GDI объекты для очистки
+        self.gdi_objects = []
         
         # Создаем шрифт
         self.font = win32ui.CreateFont({
@@ -186,7 +246,7 @@ class OverlayWindow:
         self.crosshair_dot_radius = 3  # Радиус точек на концах линий
         
         self.last_update_time = time.time()
-        self.update_interval = 1.0 / 60.0  # 60 FPS
+        self.update_interval = 1.0 / 30.0  # 30 FPS
         
         # Флаг для отрисовки скелета
         self.draw_skeleton_enabled = False
@@ -209,9 +269,13 @@ class OverlayWindow:
         try:
             if not cursor_pos or not target_pos or speed <= 0:
                 return
+            
+            # Создаем список для отслеживания GDI объектов
+            gdi_objects = []
                 
             # Создаем перо для рисования
             pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0x0000FF)  # Красный цвет, толщина 2
+            gdi_objects.append(pen)
             old_pen = self.save_dc.SelectObject(pen)
             
             try:
@@ -256,10 +320,13 @@ class OverlayWindow:
             finally:
                 # Восстанавливаем старое перо
                 self.save_dc.SelectObject(old_pen)
-                try:
-                    pen.DeleteObject()
-                except:
-                    pass  # Игнорируем ошибку удаления пера
+                
+                # Очищаем ресурсы
+                for obj in gdi_objects:
+                    try:
+                        obj.DeleteObject()
+                    except:
+                        pass  # Игнорируем ошибку удаления пера
                 
         except Exception as e:
             print(f"Error in draw_movement_vector: {str(e)}")
@@ -267,44 +334,88 @@ class OverlayWindow:
     def draw_bounding_box(self, box, color, class_name=None, distance=None):
         if not box:
             return
-        min_x, min_y, max_x, max_y = box
-        # Только перо, без кисти (заливки)
-        pen = win32ui.CreatePen(win32con.PS_SOLID, 2, color[2] << 16 | color[1] << 8 | color[0])
-        self.save_dc.SelectObject(pen)
-        # Убираем заливку: не выбираем кисть вообще
-        self.save_dc.Rectangle((min_x, min_y, max_x, max_y))
-        # Центр
-        center_x = (min_x + max_x) // 2
-        center_y = (min_y + max_y) // 2
-        yellow_pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0x00FFFF)
-        self.save_dc.SelectObject(yellow_pen)
-        cross = 10
-        self.save_dc.MoveTo((center_x - cross, center_y)); self.save_dc.LineTo((center_x + cross, center_y))
-        self.save_dc.MoveTo((center_x, center_y - cross)); self.save_dc.LineTo((center_x, center_y + cross))
-        self.save_dc.Ellipse((center_x - cross, center_y - cross, center_x + cross, center_y + cross))
-        
-        # Добавляем информацию о классе и расстоянии, если они предоставлены
-        if class_name or distance:
-            info_text = ""
-            if class_name:
-                info_text += f"{class_name}"
-            if distance:
+        try:
+            # Создаем список для отслеживания GDI объектов
+            gdi_objects = []
+            
+            min_x, min_y, max_x, max_y = box
+            
+            # Валидация координат
+            if not all(isinstance(x, (int, float)) for x in [min_x, min_y, max_x, max_y]):
+                print(f"Invalid box coordinates: {box}")
+                return
+                
+            # Преобразуем в целые числа
+            min_x, min_y, max_x, max_y = int(min_x), int(min_y), int(max_x), int(max_y)
+            
+            # Проверяем, что координаты имеют правильный порядок
+            if min_x >= max_x or min_y >= max_y:
+                print(f"Invalid box dimensions: {box}")
+                return
+                
+            # Валидация цвета
+            if not isinstance(color, (list, tuple)) or len(color) != 3:
+                print(f"Invalid color format: {color}")
+                color = (255, 255, 255)  # Белый цвет по умолчанию
+                
+            # Убедимся, что цвет - это кортеж из трех целых чисел от 0 до 255
+            color = tuple(max(0, min(255, int(c))) for c in color)
+            
+            # Только перо, без кисти (заливки)
+            color_value = color[2] << 16 | color[1] << 8 | color[0]
+            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, color_value)
+            gdi_objects.append(pen)
+            self.save_dc.SelectObject(pen)
+            
+            # Убираем заливку: не выбираем кисть вообще
+            self.save_dc.Rectangle((min_x, min_y, max_x, max_y))
+            
+            # Центр
+            center_x = (min_x + max_x) // 2
+            center_y = (min_y + max_y) // 2
+            yellow_pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0x00FFFF)
+            gdi_objects.append(yellow_pen)
+            self.save_dc.SelectObject(yellow_pen)
+            cross = 10
+            self.save_dc.MoveTo((center_x - cross, center_y)); self.save_dc.LineTo((center_x + cross, center_y))
+            self.save_dc.MoveTo((center_x, center_y - cross)); self.save_dc.LineTo((center_x, center_y + cross))
+            self.save_dc.Ellipse((center_x - cross, center_y - cross, center_x + cross, center_y + cross))
+            
+            # Добавляем информацию о классе и расстоянии, если они предоставлены
+            if class_name or distance:
+                info_text = ""
+                if class_name:
+                    info_text += f"{class_name}"
+                if distance:
+                    if info_text:
+                        info_text += f": {distance:.2f}m"
+                    else:
+                        info_text += f"{distance:.2f}m"
+                    
                 if info_text:
-                    info_text += f": {distance:.2f}m"
-                else:
-                    info_text += f"{distance:.2f}m"
-                
-            if info_text:
-                # Рисуем фон для текста
-                text_width = self.save_dc.GetTextExtent(info_text)[0]
-                bg_color = 0x404040  # Серый фон
-                brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
-                self.save_dc.SelectObject(brush)
-                self.save_dc.Rectangle((min_x, min_y - 30, min_x + text_width + 10, min_y - 5))
-                
-                # Рисуем текст
-                self.save_dc.SetTextColor(0xFFFFFF)  # Белый текст
-                self.save_dc.TextOut(min_x + 5, min_y - 25, info_text)
+                    # Рисуем фон для текста
+                    text_width = self.save_dc.GetTextExtent(info_text)[0]
+                    bg_color = 0x404040  # Серый фон
+                    brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
+                    gdi_objects.append(brush)
+                    self.save_dc.SelectObject(brush)
+                    self.save_dc.Rectangle((min_x, min_y - 30, min_x + text_width + 10, min_y - 5))
+                    
+                    # Рисуем текст
+                    self.save_dc.SetTextColor(0xFFFFFF)  # Белый текст
+                    self.save_dc.TextOut(min_x + 5, min_y - 25, info_text)
+            
+            # Очищаем ресурсы
+            for obj in gdi_objects:
+                try:
+                    obj.DeleteObject()
+                except:
+                    pass
+                    
+        except Exception as e:
+            print(f"Error in draw_bounding_box: {e}")
+            import traceback
+            traceback.print_exc()
 
     def draw_landmark_labels(self, landmarks):
         """Не используется в YOLO, оставлено для совместимости"""
@@ -313,6 +424,9 @@ class OverlayWindow:
     def draw_crosshair(self, cursor_controller):
         """Рисует прицел в зависимости от режима"""
         try:
+            # Создаем список для отслеживания GDI объектов
+            gdi_objects = []
+            
             # Получаем цвет прицела в зависимости от режима
             color = self.crosshair_relative_color if cursor_controller.relative_mode else self.crosshair_color
             
@@ -322,6 +436,7 @@ class OverlayWindow:
             
             # Создаем перо для линий прицела
             pen = win32ui.CreatePen(win32con.PS_SOLID, self.crosshair_thickness, color)
+            gdi_objects.append(pen)
             self.save_dc.SelectObject(pen)
             
             # Рисуем горизонтальную линию
@@ -376,15 +491,25 @@ class OverlayWindow:
                     center_y + self.crosshair_size + dot_size
                 ))
             
+            # Очищаем ресурсы
+            for obj in gdi_objects:
+                try:
+                    obj.DeleteObject()
+                except:
+                    pass
+                    
         except Exception as e:
             print(f"Error drawing crosshair: {str(e)}")
 
     def draw_following_status(self, cursor_controller):
         try:
+            # Создаем список для отслеживания GDI объектов
+            gdi_objects = []
+            
             # Позиция и размеры кнопки
             button_width = 240
             button_height = 80
-            button_x = 460  # Сдвигаем ближе к рамке отладочной информации
+            button_x = 460  # Смещаем левее с 600 до 460
             button_y = 50  # Располагаем рядом с отладочной информацией
             
             # Цвета для кнопки
@@ -394,11 +519,13 @@ class OverlayWindow:
             
             # Рисуем фон кнопки
             brush = win32ui.CreateBrush(win32con.BS_SOLID, button_bg_color, 0)
+            gdi_objects.append(brush)
             self.save_dc.SelectObject(brush)
             self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
             
             # Рисуем рамку кнопки
             pen = win32ui.CreatePen(win32con.PS_SOLID, 2, button_border_active)
+            gdi_objects.append(pen)
             self.save_dc.SelectObject(pen)
             self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
             
@@ -408,26 +535,84 @@ class OverlayWindow:
             
             # Рисуем статус режима
             self.save_dc.SetTextColor(button_border_active)
-            following_status = "ENABLED" if cursor_controller.following_enabled else "DISABLED"
+            following_status = "ON" if cursor_controller.following_enabled else "OFF"
             self.save_dc.TextOut(button_x + 10, button_y + 30, following_status)
             
-            # Добавляем информацию о режиме выбора цели
+            # Добавляем подсказку по клавише справа от кнопки
+            hotkey_text = ": +"
+            self.save_dc.SetTextColor(0x00FF00)  # Зеленый цвет для подсказки
+            hotkey_x = button_x + button_width + 10
+            self.save_dc.TextOut(hotkey_x, button_y + 30, hotkey_text)
+            
+            # Рисуем отдельный индикатор для режима выбора цели
+            self.draw_target_mode(cursor_controller, button_x, button_y + 50)
+            
+            # Очищаем ресурсы
+            for obj in gdi_objects:
+                try:
+                    obj.DeleteObject()
+                except:
+                    pass
+            
+        except Exception as e:
+            print(f"Error drawing following status: {str(e)}")
+
+    def draw_target_mode(self, cursor_controller, x, y):
+        """Рисует индикатор режима выбора цели"""
+        try:
+            # Создаем список для отслеживания GDI объектов
+            gdi_objects = []
+            
+            # Позиция и размеры кнопки
+            button_width = 240
+            button_height = 30
+            
+            # Цвета для кнопки
+            button_bg_color = 0x404040  # Серый фон
+            button_border = 0xFFFFFF  # Белая рамка
+            button_text_color = 0xFFFFFF  # Белый текст
+            
+            # Рисуем фон кнопки
+            brush = win32ui.CreateBrush(win32con.BS_SOLID, button_bg_color, 0)
+            gdi_objects.append(brush)
+            self.save_dc.SelectObject(brush)
+            self.save_dc.Rectangle((x, y, x + button_width, y + button_height))
+            
+            # Рисуем рамку кнопки
+            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, button_border)
+            gdi_objects.append(pen)
+            self.save_dc.SelectObject(pen)
+            self.save_dc.Rectangle((x, y, x + button_width, y + button_height))
+            
+            # Рисуем текст режима выбора цели
             if cursor_controller.following_enabled:
                 target_mode = "TARGET MODE: NEAREST"
             else:
                 target_mode = "TARGET MODE: LARGEST"
                 
-            self.save_dc.TextOut(button_x + 10, button_y + 50, target_mode)
+            self.save_dc.SetTextColor(button_text_color)
+            self.save_dc.TextOut(x + 10, y + 5, target_mode)
+            
+            # Очищаем ресурсы
+            for obj in gdi_objects:
+                try:
+                    obj.DeleteObject()
+                except:
+                    pass
+            
         except Exception as e:
-            print(f"Error drawing following status: {str(e)}")
+            print(f"Error drawing target mode: {str(e)}")
 
     def draw_mode_status(self, cursor_controller):
         """Рисует индикатор режима мыши в виде кнопки"""
         try:
+            # Создаем список для отслеживания GDI объектов
+            gdi_objects = []
+            
             # Позиция и размеры кнопки
             button_width = 120
             button_height = 40
-            button_x = 460  # Сдвигаем ближе к рамке отладочной информации
+            button_x = 460  # Смещаем левее с 600 до 460
             button_y = 140  # Размещаем под кнопкой following
             
             # Цвета
@@ -436,17 +621,19 @@ class OverlayWindow:
             
             # Рисуем фон кнопки
             brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
+            gdi_objects.append(brush)
             self.save_dc.SelectObject(brush)
             self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
             
             # Рисуем рамку кнопки
             pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0xFFFFFF)  # Белая рамка
+            gdi_objects.append(pen)
             self.save_dc.SelectObject(pen)
             self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
             
             # Рисуем текст
             self.save_dc.SetTextColor(text_color)
-            status = "MODE: RELATIVE" if cursor_controller.relative_mode else "MODE: ABSOLUTE"
+            status = "MS: RELATIVE" if cursor_controller.relative_mode else "MS: ABSOLUTE"
             
             # Центрируем текст
             text_width = self.save_dc.GetTextExtent(status)[0]
@@ -455,18 +642,18 @@ class OverlayWindow:
             
             self.save_dc.TextOut(text_x, text_y, status)
             
-            # Добавляем подсказку с хоткеем
-            hotkey_text = "- :"
-            hotkey_width = self.save_dc.GetTextExtent(hotkey_text)[0]
-            hotkey_x = button_x - hotkey_width - 5  # 5 пикселей отступа от кнопки
+            # Добавляем подсказку с хоткеем справа от кнопки
+            hotkey_text = ": -"
             self.save_dc.SetTextColor(0x00FF00)  # Зеленый цвет для подсказки
+            hotkey_x = button_x + button_width + 10
             self.save_dc.TextOut(hotkey_x, button_y + (button_height - 20) // 2, hotkey_text)
             
             # Очищаем ресурсы
-            try:
-                brush.DeleteObject()
-            except:
-                pass
+            for obj in gdi_objects:
+                try:
+                    obj.DeleteObject()
+                except:
+                    pass
             
         except Exception as e:
             print(f"Error drawing mode status: {str(e)}")
@@ -474,10 +661,13 @@ class OverlayWindow:
     def draw_attack_status(self, cursor_controller):
         """Рисует индикатор режима атаки в виде кнопки"""
         try:
+            # Создаем список для отслеживания GDI объектов
+            gdi_objects = []
+            
             # Позиция и размеры кнопки
             button_width = 120
             button_height = 40
-            button_x = 460  # Сдвигаем ближе к рамке отладочной информации
+            button_x = 460  # Смещаем левее с 600 до 460
             button_y = 190  # Располагаем под кнопкой режима
             
             # Цвета
@@ -486,11 +676,13 @@ class OverlayWindow:
             
             # Рисуем фон кнопки
             brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
+            gdi_objects.append(('brush', brush))
             self.save_dc.SelectObject(brush)
             self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
             
             # Рисуем рамку кнопки
             pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0xFFFFFF)  # Белая рамка
+            gdi_objects.append(('pen', pen))
             self.save_dc.SelectObject(pen)
             self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
             
@@ -505,48 +697,125 @@ class OverlayWindow:
             
             self.save_dc.TextOut(text_x, text_y, status)
             
-            # Добавляем подсказку с хоткеем
-            hotkey_text = "BS :"
-            hotkey_width = self.save_dc.GetTextExtent(hotkey_text)[0]
-            hotkey_x = button_x - hotkey_width - 5  # 5 пикселей отступа от кнопки
+            # Добавляем подсказку с хоткеем справа от кнопки
+            hotkey_text = ": BS"
             self.save_dc.SetTextColor(0x00FF00)  # Зеленый цвет для подсказки
+            hotkey_x = button_x + button_width + 10
             self.save_dc.TextOut(hotkey_x, button_y + (button_height - 20) // 2, hotkey_text)
             
             # Очищаем ресурсы
-            try:
-                brush.DeleteObject()
-            except:
-                pass
+            for obj_type, obj in gdi_objects:
+                try:
+                    if obj_type == 'brush':
+                        if hasattr(obj, 'DeleteObject'):
+                            obj.DeleteObject()
+                        elif hasattr(obj, 'delete'):
+                            obj.delete()
+                    elif obj_type == 'pen':
+                        if hasattr(obj, 'DeleteObject'):
+                            obj.DeleteObject()
+                        elif hasattr(obj, 'delete'):
+                            obj.delete()
+                except Exception as e:
+                    print(f"Error cleaning up GDI object ({obj_type}): {str(e)}")
             
         except Exception as e:
             print(f"Error drawing attack status: {str(e)}")
 
-    def draw_ignored_classes(self, cursor_controller):
-        """Рисует список игнорируемых типов объектов в левом углу"""
+    def draw_person_ignore_status(self, cursor_controller):
+        """Рисует индикатор режима игнорирования людей в виде кнопки"""
         try:
-            # Позиция и размеры блока (переносим в левый край)
-            block_width = 250
-            line_height = 20
-            max_lines = 12  # Достаточно для отображения игнорируемых классов
+            # Создаем список для отслеживания GDI объектов
+            gdi_objects = []
             
-            # Определяем высоту блока
-            ignored_count = len(cursor_controller.ignored_classes) if hasattr(cursor_controller, 'ignored_classes') else 0
-            block_height = min(ignored_count + 2, max_lines) * line_height + 20  # +2 для заголовка
-            block_x = 100  # Переносим в левый край
-            block_y = 450  # Опускаем еще ниже для лучшей видимости
+            # Позиция и размеры кнопки - та же ширина, что и у других кнопок
+            button_width = 120
+            button_height = 40
+            button_x = 460  # Смещаем левее с 600 до 460
+            button_y = 240  # Располагаем под кнопкой атаки
+            
+            # Проверяем, игнорируются ли люди (person)
+            person_ignored = 'person' in [cls.lower() for cls in cursor_controller.ignored_classes]
+            
+            # Цвета
+            bg_color = 0xFF0000 if person_ignored else 0x404040  # Красный для активного, серый для неактивного
+            text_color = 0xFFFFFF  # Белый текст
+            
+            # Рисуем фон кнопки
+            brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
+            gdi_objects.append(('brush', brush))
+            self.save_dc.SelectObject(brush)
+            self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
+            
+            # Рисуем рамку кнопки
+            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0xFFFFFF)  # Белая рамка
+            gdi_objects.append(('pen', pen))
+            self.save_dc.SelectObject(pen)
+            self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
+            
+            # Рисуем текст
+            self.save_dc.SetTextColor(text_color)
+            status = "IGNORE PERSON" if person_ignored else "TRACK PERSON"
+            
+            # Центрируем текст
+            text_width = self.save_dc.GetTextExtent(status)[0]
+            text_x = button_x + (button_width - text_width) // 2
+            text_y = button_y + (button_height - 20) // 2
+            
+            self.save_dc.TextOut(text_x, text_y, status)
+            
+            # Добавляем подсказку с хоткеем справа от кнопки
+            hotkey_text = ": \\"
+            self.save_dc.SetTextColor(0x00FF00)  # Зеленый цвет для подсказки
+            hotkey_x = button_x + button_width + 10
+            self.save_dc.TextOut(hotkey_x, button_y + (button_height - 20) // 2, hotkey_text)
+            
+            # Очищаем ресурсы
+            for obj_type, obj in gdi_objects:
+                try:
+                    if obj_type == 'brush':
+                        if hasattr(obj, 'DeleteObject'):
+                            obj.DeleteObject()
+                        elif hasattr(obj, 'delete'):
+                            obj.delete()
+                    elif obj_type == 'pen':
+                        if hasattr(obj, 'DeleteObject'):
+                            obj.DeleteObject()
+                        elif hasattr(obj, 'delete'):
+                            obj.delete()
+                except Exception as e:
+                    print(f"Error cleaning up GDI object ({obj_type}): {str(e)}")
+            
+        except Exception as e:
+            print(f"Error drawing person ignore status: {str(e)}")
+
+    def draw_ignored_classes(self, cursor_controller):
+        try:
+            # Создаем список для отслеживания GDI объектов
+            gdi_objects = []
+            
+            # Параметры блока
+            block_width = 200
+            line_height = 20
+            max_lines = 10  # Максимальное количество строк
+            block_height = line_height * (max_lines + 1)  # +1 для заголовка
+            block_x = 10
+            block_y = 400  # Оригинальная позиция блока
             
             # Цвета
             bg_color = 0x404040  # Серый фон
             title_color = 0xFFFFFF  # Белый для заголовка
-            text_color = 0xFF0000  # Красный для игнорируемых классов
+            text_color = 0x0000FF  # Красный для игнорируемых классов
             
             # Рисуем фон блока
             brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
+            gdi_objects.append(brush)
             self.save_dc.SelectObject(brush)
             self.save_dc.Rectangle((block_x, block_y, block_x + block_width, block_y + block_height))
             
             # Рисуем рамку блока
             pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0xFFFFFF)  # Белая рамка
+            gdi_objects.append(pen)
             self.save_dc.SelectObject(pen)
             self.save_dc.Rectangle((block_x, block_y, block_x + block_width, block_y + block_height))
             
@@ -560,7 +829,7 @@ class OverlayWindow:
             if hasattr(cursor_controller, 'ignored_classes') and cursor_controller.ignored_classes:
                 self.save_dc.SetTextColor(text_color)
                 for i, class_name in enumerate(cursor_controller.ignored_classes):
-                    if i >= max_lines - 2:  # -2 для заголовка
+                    if i >= max_lines - 1:  # -1 для заголовка
                         # Если список слишком длинный, показываем многоточие
                         self.save_dc.TextOut(block_x + 10, y_offset, "...")
                         break
@@ -572,11 +841,11 @@ class OverlayWindow:
                 self.save_dc.TextOut(block_x + 10, y_offset, "None")
                 
             # Очищаем ресурсы
-            try:
-                brush.DeleteObject()
-                pen.DeleteObject()
-            except:
-                pass
+            for obj in gdi_objects:
+                try:
+                    obj.DeleteObject()
+                except:
+                    pass
                 
         except Exception as e:
             print(f"Error drawing ignored classes: {str(e)}")
@@ -586,56 +855,77 @@ class OverlayWindow:
         if current_time - self.last_update_time < self.update_interval:
             return
         self.last_update_time = current_time
+        
+        # Список для отслеживания созданных GDI объектов
+        gdi_objects = []
+        
         try:
-            self.save_dc.FillSolidRect((0, 0, 1920, 1080), 0x000000)
+            # Заполняем фон с прозрачностью - используем RGBA формат
+            # Создаем полупрозрачный темно-серый цвет
+            # (R, G, B, A) где A - это уровень прозрачности (0-255)
+            self.save_dc.FillSolidRect((0, 0, self.screen_width, self.screen_height), 0x00000000)  # Полностью прозрачный фон
+            
+            # Затем поверх рисуем полупрозрачную темно-серую подложку для элементов интерфейса
+            brush = win32ui.CreateBrush(win32con.BS_SOLID, 0x202020, 0)
+            gdi_objects.append(('brush', brush))
+            alpha_pen = win32ui.CreatePen(win32con.PS_SOLID, 1, 0x202020)
+            gdi_objects.append(('pen', alpha_pen))
+            
+            self.save_dc.SelectObject(brush)
+            self.save_dc.SelectObject(alpha_pen)
+            
+            # Рисуем полупрозрачные области для интерфейса
+            # Область заголовка
+            self.save_dc.Rectangle((0, 0, self.screen_width, 300))
+            
+            # Области для элементов управления и информации
+            self.save_dc.Rectangle((460, 50, 460 + 240, 50 + 240))  # Зона кнопок
+            self.save_dc.Rectangle((100, 60, 450, 520))  # Зона статистики
             
             # Добавляем название программы и версию в центре верхней части экрана
             title_text = "Reign of Bots"
-            version_text = "v0.024"
+            version_text = "v0.025"
             
-            # Используем более крупный шрифт для заголовка
+            # Используем Arial italic для заголовка, красный цвет, увеличиваем размер шрифта
             title_font = win32ui.CreateFont({
-                'name': 'Consolas',
-                'height': 36,
+                'name': 'Arial',
+                'height': 80,  # Значительно увеличиваем размер шрифта для лучшей видимости
                 'weight': win32con.FW_BOLD,
+                'italic': True,
                 'charset': win32con.ANSI_CHARSET
             })
+            gdi_objects.append(('font', title_font))
             
-            # Рисуем заголовок
+            # Сначала выбираем шрифт
             self.save_dc.SelectObject(title_font)
+            
+            # Затем устанавливаем цвет
+            self.save_dc.SetTextColor(0x0000FF)  # Ярко-красный цвет
+            
+            # Теперь можем получить размеры текста
             title_width = self.save_dc.GetTextExtent(title_text)[0]
-            title_height = 36
+            title_height = 80  # Соответствует размеру шрифта
+            center_x = (self.screen_width - title_width) // 2
+            title_y = 100 - title_height // 2  # Смещаем заголовок на 100 пикселей выше
             
-            # Фон для заголовка
-            title_bg_x = (self.screen_width - title_width) // 2 - 20
-            title_bg_y = 20
-            title_bg_width = title_width + 40
-            title_bg_height = title_height + 20
+            # Рисуем заголовок ярко-красным цветом
+            self.save_dc.SelectObject(title_font)
+            self.save_dc.SetTextColor(0x0000FF)  # Ярко-красный цвет
+            self.save_dc.TextOut(center_x, title_y, title_text)
             
-            # Рисуем фон заголовка
-            self.save_dc.FillSolidRect((title_bg_x, title_bg_y, title_bg_x + title_bg_width, title_bg_y + title_bg_height), 0x404040)
-            
-            # Рисуем рамку
-            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0x00FFFF)  # Голубая рамка
-            self.save_dc.SelectObject(pen)
-            self.save_dc.Rectangle((title_bg_x, title_bg_y, title_bg_x + title_bg_width, title_bg_y + title_bg_height))
-            
-            # Рисуем сам текст заголовка
-            self.save_dc.SetTextColor(0x00FFFF)  # Голубой текст
-            self.save_dc.TextOut((self.screen_width - title_width) // 2, title_bg_y + 10, title_text)
-            
-            # Добавляем версию под заголовком
+            # Добавляем версию под заголовком маленьким текстом
             version_font = win32ui.CreateFont({
                 'name': 'Consolas',
-                'height': 16,
+                'height': 14,  # Маленький размер текста
                 'weight': win32con.FW_NORMAL,
                 'charset': win32con.ANSI_CHARSET
             })
+            gdi_objects.append(('font', version_font))
             
             self.save_dc.SelectObject(version_font)
             version_width = self.save_dc.GetTextExtent(version_text)[0]
             self.save_dc.SetTextColor(0xFFFFFF)  # Белый текст для версии
-            self.save_dc.TextOut((self.screen_width - version_width) // 2, title_bg_y + title_bg_height + 5, version_text)
+            self.save_dc.TextOut((self.screen_width - version_width) // 2, title_y + 70, version_text)
             
             # Возвращаемся к основному шрифту для остального интерфейса
             self.save_dc.SelectObject(self.font)
@@ -645,15 +935,15 @@ class OverlayWindow:
                 self.draw_following_status(cursor_controller)
                 self.draw_mode_status(cursor_controller)
                 self.draw_attack_status(cursor_controller)
-                self.draw_ignored_classes(cursor_controller)
+                self.draw_person_ignore_status(cursor_controller)  # Добавляем индикатор игнорирования Persons
                 
                 # Добавляем статус информации про клавишу W и расстояние
                 try:
                     # Позиция и размеры блока информации
                     info_width = 300
                     info_height = 120
-                    info_x = 460  # Сдвигаем ближе к рамке отладочной информации
-                    info_y = 240  # Располагаем под кнопками статуса
+                    info_x = 460  # Смещаем левее с 600 до 460
+                    info_y = 290  # Располагаем под кнопкой игнорирования Person (было 240)
                     
                     # Цвета для блока
                     bg_color = 0x404040  # Серый фон
@@ -663,11 +953,13 @@ class OverlayWindow:
                     
                     # Рисуем фон блока
                     brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
+                    gdi_objects.append(('brush', brush))
                     self.save_dc.SelectObject(brush)
                     self.save_dc.Rectangle((info_x, info_y, info_x + info_width, info_y + info_height))
                     
                     # Рисуем рамку блока
                     pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0xFFFFFF)  # Белая рамка
+                    gdi_objects.append(('pen', pen))
                     self.save_dc.SelectObject(pen)
                     self.save_dc.Rectangle((info_x, info_y, info_x + info_width, info_y + info_height))
                     
@@ -697,31 +989,47 @@ class OverlayWindow:
             
             if detected_objects:
                 for obj in detected_objects:
-                    if obj['type'] == 'body':
-                        if self.draw_skeleton_enabled:
-                            self.draw_skeleton(obj['landmarks'], obj['color'])
-                        if 'box' in obj:
-                            self.draw_bounding_box(obj['box'], obj['color'], obj.get('class', None), obj.get('distance', None))
-                    elif obj['type'] == 'object':
-                        if 'box' in obj:
-                            # Добавляем метку над боксом с информацией о классе и расстоянии
-                            box = obj['box']
-                            color = obj['color']
-                            
-                            # Рисуем бокс
-                            self.draw_bounding_box(box, color, obj.get('class', None), obj.get('distance', None))
-                            
-                            # Если объект является целевым, рисуем дополнительно подсветку
-                            if obj.get('is_target', False):
-                                # Рисуем дополнительную рамку для выделения цели
-                                min_x, min_y, max_x, max_y = box
-                                pen = win32ui.CreatePen(win32con.PS_SOLID, 3, 0x00FFFF)  # Голубая рамка
-                                self.save_dc.SelectObject(pen)
-                                self.save_dc.Rectangle((min_x-5, min_y-5, max_x+5, max_y+5))
+                    try:
+                        if obj['type'] == 'body':
+                            if self.draw_skeleton_enabled:
+                                self.draw_skeleton(obj['landmarks'], obj['color'])
+                            if 'box' in obj:
+                                self.draw_bounding_box(obj['box'], obj['color'], obj.get('class', None), obj.get('distance', None))
+                        elif obj['type'] == 'object':
+                            if 'box' in obj:
+                                # Добавляем метку над боксом с информацией о классе и расстоянии
+                                box = obj['box']
+                                color = obj['color']
                                 
-                                # Добавляем текст "TARGET"
-                                self.save_dc.SetTextColor(0x00FFFF)  # Голубой текст
-                                self.save_dc.TextOut(min_x, max_y + 10, "[TARGET]")
+                                # Проверяем, что box содержит 4 элемента
+                                if len(box) != 4:
+                                    print(f"Invalid box format: {box}")
+                                    continue
+                                    
+                                # Проверяем, что color содержит 3 элемента
+                                if len(color) != 3:
+                                    print(f"Invalid color format: {color}")
+                                    color = (255, 255, 255)  # Устанавливаем белый цвет по умолчанию
+                                
+                                # Рисуем бокс
+                                self.draw_bounding_box(box, color, obj.get('class', None), obj.get('distance', None))
+                                
+                                # Если объект является целевым, рисуем дополнительно подсветку
+                                if obj.get('is_target', False):
+                                    # Рисуем дополнительную рамку для выделения цели
+                                    min_x, min_y, max_x, max_y = box
+                                    pen = win32ui.CreatePen(win32con.PS_SOLID, 3, 0x00FFFF)  # Голубая рамка
+                                    gdi_objects.append(('pen', pen))
+                                    self.save_dc.SelectObject(pen)
+                                    self.save_dc.Rectangle((min_x-5, min_y-5, max_x+5, max_y+5))
+                                    
+                                    # Добавляем текст "TARGET"
+                                    self.save_dc.SetTextColor(0x00FFFF)  # Голубой текст
+                                    self.save_dc.TextOut(min_x, max_y + 10, "[TARGET]")
+                    except Exception as e:
+                        print(f"Error drawing object: {e}")
+                        import traceback
+                        traceback.print_exc()
             
             self.save_dc.SelectObject(self.font)
             
@@ -754,31 +1062,74 @@ class OverlayWindow:
                 text = "Performance (ms):\n"
                 text += "Component        Current    Avg\n"
                 text += "----------------------------\n"
-                for name, counter in perf_stats.items():
-                    short_name = {
-                        'capture': 'Capture',
-                        'process': 'Process',
-                        'detection': 'Detect',
-                        'drawing': 'Draw',
-                        'overlay': 'Overlay',
-                        'cursor': 'Cursor'
-                    }.get(name, name)
-                    current_ms = round(counter.current_time * 1000, 1)
-                    avg_ms = round(counter.avg_time * 1000, 1)
-                    current_ms = min(max(current_ms, 0), 9999.9)
-                    avg_ms = min(max(avg_ms, 0), 9999.9)
-                    text += f"{short_name:<12} {current_ms:>8.1f} {avg_ms:>8.1f}\n"
-                self.save_dc.DrawText(
-                    text,
-                    (110, 210, 460, 490),
-                    win32con.DT_LEFT | win32con.DT_TOP
-                )
+                
+                try:
+                    for name, counter in perf_stats.items():
+                        short_name = {
+                            'capture': 'Capture',
+                            'process': 'Process',
+                            'detection': 'Detect',
+                            'drawing': 'Draw',
+                            'overlay': 'Overlay',
+                            'cursor': 'Cursor'
+                        }.get(name, name)
+                            
+                        try:
+                            current_ms = round(counter.current_time * 1000, 1)
+                            avg_ms = round(counter.avg_time * 1000, 1)
+                            current_ms = min(max(current_ms, 0), 9999.9)
+                            avg_ms = min(max(avg_ms, 0), 9999.9)
+                            text += f"{short_name:<12} {current_ms:>8.1f} {avg_ms:>8.1f}\n"
+                        except Exception as e:
+                            print(f"Error formatting perf stat for {name}: {str(e)}")
+                            text += f"{short_name:<12} {"error":>8} {"error":>8}\n"
+                    
+                    self.save_dc.DrawText(
+                        text,
+                        (110, 210, 460, 490),
+                        win32con.DT_LEFT | win32con.DT_TOP
+                    )
+                except Exception as e:
+                    print(f"Error drawing performance stats: {str(e)}")
+                    
             self.mfc_dc.BitBlt(
-                (0, 0), (1920, 1080),
+                (0, 0), (self.screen_width, self.screen_height),
                 self.save_dc,
                 (0, 0),
                 win32con.SRCCOPY
             )
+            
+            # Используем UpdateLayeredWindow вместо SetLayeredWindowAttributes
+            try:
+                # Создаем источник DC
+                srcdc = self.save_dc.GetSafeHdc()
+                
+                # Параметры смешивания - используем 150 для общей прозрачности (было 255) 
+                # и AC_SRC_ALPHA, чтобы учитывать альфа-канал пикселей
+                blend_function = (win32con.AC_SRC_OVER, 0, 150, win32con.AC_SRC_ALPHA)
+                
+                # Координаты
+                pt_src = (0, 0)
+                pt_dst = (0, 0)
+                
+                # Размер
+                size = (self.screen_width, self.screen_height)
+                
+                # Вызываем UpdateLayeredWindow
+                win32gui.UpdateLayeredWindow(
+                    self.hwnd,
+                    win32gui.GetDC(0),  # Используем DC экрана
+                    pt_dst,
+                    size,
+                    srcdc,
+                    pt_src,
+                    0,
+                    blend_function,
+                    win32con.ULW_ALPHA
+                )
+            except Exception as e:
+                print(f"Error in UpdateLayeredWindow: {e}")
+            
             win32gui.SetWindowPos(
                 self.hwnd,
                 win32con.HWND_TOPMOST,
@@ -789,6 +1140,25 @@ class OverlayWindow:
             print(f"Error updating overlay: {str(e)}")
             import traceback
             traceback.print_exc()
+        finally:
+            # Освобождаем все созданные GDI объекты
+            for obj_type, obj in gdi_objects:
+                try:
+                    if obj_type == 'brush':
+                        if hasattr(obj, 'DeleteObject'):
+                            obj.DeleteObject()
+                        elif hasattr(obj, 'delete'):
+                            obj.delete()
+                    elif obj_type == 'pen':
+                        if hasattr(obj, 'DeleteObject'):
+                            obj.DeleteObject()
+                        elif hasattr(obj, 'delete'):
+                            obj.delete()
+                    elif obj_type == 'font':
+                        # Для шрифтов нет явного метода удаления, они освобождаются автоматически
+                        pass
+                except Exception as e:
+                    print(f"Error cleaning up GDI object ({obj_type}): {str(e)}")
 
     def __del__(self):
         try:
@@ -870,7 +1240,7 @@ class CursorController:
         self.last_box = None
         
         # Список игнорируемых типов объектов (не будут выбираться в качестве цели)
-        self.ignored_classes = ['chair', 'potted plant', 'tv', 'couch', 'clock', 'book']
+        self.ignored_classes = DEFAULT_IGNORED_CLASSES.copy()
         
         # Фильтры Калмана для координат рамки с более сильным сглаживанием
         self.kalman_x_min = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)  # Уменьшаем process_variance для более сильного сглаживания
@@ -910,7 +1280,7 @@ class CursorController:
         self.SLOW_FACTOR = 100  # Фактор замедления для абсолютного режима
         self.RELATIVE_SLOW_FACTOR = 500  # Фактор замедления для относительного режима
         self.VIRTUAL_TARGET_SHIFT = 5  # Шаг смещения виртуальной цели
-        self.MIN_MOVE = 1.0 / 100  # Минимальное движение для абсолютного режима
+        self.MIN_MOVE = 0.01  # Минимальное движение для абсолютного режима
         self.RELATIVE_MIN_MOVE = 0.1  # Минимальное движение для относительного режима
         
         # Параметры для сглаживания движения
@@ -961,6 +1331,20 @@ class CursorController:
         
     def toggle_class_ignore(self, class_name):
         """Переключает игнорирование определенного типа объекта"""
+        # Проверяем, является ли class_name числом (ID класса)
+        try:
+            class_id = int(class_name)
+            # Если это ID класса, получаем его название
+            if class_id in COCO_CLASSES:
+                class_name = COCO_CLASSES[class_id]
+            else:
+                print(f"Unknown class ID: {class_id}")
+                return False
+        except ValueError:
+            # Если это не число, то считаем, что это название класса
+            pass
+            
+        # Проверяем, есть ли класс в списке игнорируемых
         if class_name.lower() in [cls.lower() for cls in self.ignored_classes]:
             # Удаляем класс из списка игнорируемых (с сохранением регистра)
             for i, cls in enumerate(self.ignored_classes):
@@ -1107,6 +1491,10 @@ class CursorController:
         """Обновление в относительном режиме с оптимизированными вычислениями"""
         if not self.last_box:
             return
+            
+        # Если управление курсором отключено, просто выходим
+        if DISABLE_CURSOR_CONTROL:
+            return
         
         # Получаем разницу между целью и центром экрана
         dx = self.target_x - self.center_x
@@ -1163,6 +1551,10 @@ class CursorController:
     
     def _update_absolute_mode(self):
         """Обновление в абсолютном режиме с оптимизированными вычислениями"""
+        # Если управление курсором отключено, просто выходим
+        if DISABLE_CURSOR_CONTROL:
+            return
+            
         current_x, current_y = win32api.GetCursorPos()
         
         # Вычисляем разницу до цели
@@ -1473,16 +1865,37 @@ def capture_screen():
     screen_height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
     
     # Создаем DC для экрана
-    hwindc = win32gui.GetWindowDC(win32gui.GetDesktopWindow())
-    srcdc = win32ui.CreateDCFromHandle(hwindc)
-    memdc = srcdc.CreateCompatibleDC()
-    
-    # Создаем битмап
-    bmp = win32ui.CreateBitmap()
-    bmp.CreateCompatibleBitmap(srcdc, screen_width, screen_height)
-    memdc.SelectObject(bmp)
+    hwindc = None
+    srcdc = None
+    memdc = None
+    bmp = None
     
     try:
+        # Пробуем получить DC с несколькими попытками
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                hwindc = win32gui.GetWindowDC(win32gui.GetDesktopWindow())
+                if hwindc:
+                    srcdc = win32ui.CreateDCFromHandle(hwindc)
+                    if srcdc:
+                        memdc = srcdc.CreateCompatibleDC()
+                        bmp = win32ui.CreateBitmap()
+                        bmp.CreateCompatibleBitmap(srcdc, screen_width, screen_height)
+                        memdc.SelectObject(bmp)
+                        break
+            except Exception as e:
+                if attempt < max_attempts - 1:
+                    print(f"Attempt {attempt+1} failed: {str(e)}. Retrying...")
+                    time.sleep(0.1)  # Небольшая пауза перед следующей попыткой
+                else:
+                    print(f"All {max_attempts} attempts to create DC failed: {str(e)}")
+                    raise
+        
+        if not hwindc or not srcdc or not memdc or not bmp:
+            print("Failed to initialize screen capture resources")
+            return None
+        
         # Копируем изображение с экрана
         memdc.BitBlt((0, 0), (screen_width, screen_height), srcdc, (0, 0), win32con.SRCCOPY)
         
@@ -1493,12 +1906,24 @@ def capture_screen():
         
         # Конвертируем в BGR для OpenCV
         return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+    except Exception as e:
+        print(f"Error in screen capture: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
     finally:
         # Освобождаем ресурсы
-        srcdc.DeleteDC()
-        memdc.DeleteDC()
-        win32gui.ReleaseDC(win32gui.GetDesktopWindow(), hwindc)
-        win32gui.DeleteObject(bmp.GetHandle())
+        try:
+            if srcdc:
+                srcdc.DeleteDC()
+            if memdc:
+                memdc.DeleteDC()
+            if hwindc:
+                win32gui.ReleaseDC(win32gui.GetDesktopWindow(), hwindc)
+            if bmp:
+                win32gui.DeleteObject(bmp.GetHandle())
+        except Exception as e:
+            print(f"Error cleaning up screen capture resources: {str(e)}")
 
 class YOLOPersonDetector:
     """Класс для обнаружения людей с помощью YOLOv8"""
@@ -1509,14 +1934,20 @@ class YOLOPersonDetector:
         self.last_results = None
         self.lock = Thread()
         
-        # Убедимся, что модель работает на CPU
+        # Принудительно используем CPU
+        self.cuda_available = False
+        self.device = "cpu"
+        print(f"YOLOPersonDetector initialized on {self.device} (CUDA disabled)")
+        
+        # Убедимся, что модель работает на правильном устройстве
         if self.model:
             try:
-                self.model.to("cpu")
+                self.model.to(self.device)
+                print(f"Model moved to {self.device}")
             except Exception as e:
-                print(f"Warning: Could not set device to CPU: {str(e)}")
+                print(f"Warning: Could not set device to {self.device}: {str(e)}")
                 
-        print("YOLOPersonDetector initialized")
+        print(f"YOLOPersonDetector initialized on {self.device}")
         
     def detect(self, frame):
         """Обнаружение людей на кадре"""
@@ -1531,8 +1962,17 @@ class YOLOPersonDetector:
             target_height = int(original_height * (target_width / original_width))
             resized_frame = cv2.resize(frame, (target_width, target_height))
             
-            # Явно указываем устройство CPU
-            results = self.model(resized_frame, conf=self.conf, classes=0, device="cpu")  # class 0 = person
+            # Замеряем время инференса
+            import time
+            start_time = time.time()
+            
+            # Используем выбранное устройство
+            results = self.model(resized_frame, conf=self.conf, classes=0, device=self.device)  # class 0 = person
+            
+            # Рассчитываем время работы
+            inference_time = (time.time() - start_time) * 1000  # в мс
+            print(f"Detection time: {inference_time:.2f}ms on {self.device}")
+            
             self.last_results = results
             self.last_frame = frame
             
@@ -1558,14 +1998,25 @@ class YOLOPersonDetector:
             target_height = int(original_height * (target_width / original_width))
             resized_frame = cv2.resize(frame, (target_width, target_height))
             
-            # Не ограничиваем классы, чтобы обнаружить все объекты
-            results = self.model(resized_frame, conf=self.conf, device="cpu")
+            # Замеряем время инференса
+            import time
+            start_time = time.time()
+            
+            # Принудительно используем CPU режим
+            results = self.model(resized_frame, conf=self.conf, device="cpu", verbose=False)
+            
+            # Рассчитываем время работы
+            inference_time = (time.time() - start_time) * 1000  # в мс
+            print(f"All objects detection time: {inference_time:.2f}ms on CPU")
+            
             self.last_results = results
             self.last_frame = frame
             
             return results
         except Exception as e:
             print(f"Error in YOLO all-objects detection: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return None
             
     def get_all_objects(self, results=None):
@@ -1581,26 +2032,8 @@ class YOLOPersonDetector:
         if results is None or len(results) == 0:
             return []
             
-        # Словарь имен классов COCO для YOLOv8
-        coco_classes = {
-            0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 4: 'airplane', 5: 'bus', 
-            6: 'train', 7: 'truck', 8: 'boat', 9: 'traffic light', 10: 'fire hydrant', 
-            11: 'stop sign', 12: 'parking meter', 13: 'bench', 14: 'bird', 15: 'cat', 
-            16: 'dog', 17: 'horse', 18: 'sheep', 19: 'cow', 20: 'elephant', 21: 'bear', 
-            22: 'zebra', 23: 'giraffe', 24: 'backpack', 25: 'umbrella', 26: 'handbag', 
-            27: 'tie', 28: 'suitcase', 29: 'frisbee', 30: 'skis', 31: 'snowboard', 
-            32: 'sports ball', 33: 'kite', 34: 'baseball bat', 35: 'baseball glove', 
-            36: 'skateboard', 37: 'surfboard', 38: 'tennis racket', 39: 'bottle', 
-            40: 'wine glass', 41: 'cup', 42: 'fork', 43: 'knife', 44: 'spoon', 
-            45: 'bowl', 46: 'banana', 47: 'apple', 48: 'sandwich', 49: 'orange', 
-            50: 'broccoli', 51: 'carrot', 52: 'hot dog', 53: 'pizza', 54: 'donut', 
-            55: 'cake', 56: 'chair', 57: 'couch', 58: 'potted plant', 59: 'bed', 
-            60: 'dining table', 61: 'toilet', 62: 'tv', 63: 'laptop', 64: 'mouse', 
-            65: 'remote', 66: 'keyboard', 67: 'cell phone', 68: 'microwave', 
-            69: 'oven', 70: 'toaster', 71: 'sink', 72: 'refrigerator', 73: 'book', 
-            74: 'clock', 75: 'vase', 76: 'scissors', 77: 'teddy bear', 78: 'hair drier', 
-            79: 'toothbrush'
-        }
+        # Используем глобальный словарь классов COCO
+        coco_classes = COCO_CLASSES
             
         # Находим все объекты
         objects = []
@@ -1774,36 +2207,44 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
         
         # Если найдены объекты, обработаем их
         if all_objects:
+            # Сначала выведем информацию о количестве найденных объектов
+            print(f"Detected {len(all_objects)} objects")
+            
             # Добавляем все объекты в список объектов для отображения
             for obj in all_objects:
-                obj_box = obj['box']
-                obj_class = obj['class_name']
-                
-                # Вычисляем 3D позицию объекта
-                obj_x, obj_y, obj_distance, obj_speed, obj_direction = process_frame.detector.calculate_3d_position(
-                    obj_box, 
-                    screen_width, 
-                    screen_height
-                )
-                
-                # Определяем цвет в зависимости от класса
-                color_map = {
-                    'person': (0, 255, 0),  # Зеленый для людей
-                    'car': (0, 0, 255),     # Красный для машин
-                    'dog': (255, 255, 0),   # Голубой для собак
-                    'cat': (255, 0, 255),   # Розовый для кошек
-                }
-                color = color_map.get(obj_class.lower(), (255, 255, 255))  # Белый для остальных
-                
-                # Сохраняем информацию об объекте
-                detected_objects.append({
-                    'type': 'object',
-                    'class': obj_class,
-                    'color': color,
-                    'box': obj_box,
-                    'distance': obj_distance,
-                    'position': (obj_x, obj_y)
-                })
+                try:
+                    obj_box = obj['box']
+                    obj_class = obj['class_name']
+                    
+                    # Вычисляем 3D позицию объекта
+                    obj_x, obj_y, obj_distance, obj_speed, obj_direction = process_frame.detector.calculate_3d_position(
+                        obj_box, 
+                        screen_width, 
+                        screen_height
+                    )
+                    
+                    # Определяем цвет в зависимости от класса
+                    color_map = {
+                        'person': (0, 255, 0),  # Зеленый для людей
+                        'car': (0, 0, 255),     # Красный для машин
+                        'dog': (255, 255, 0),   # Голубой для собак
+                        'cat': (255, 0, 255),   # Розовый для кошек
+                    }
+                    color = color_map.get(obj_class.lower(), (255, 255, 255))  # Белый для остальных
+                    
+                    # Сохраняем информацию об объекте
+                    detected_objects.append({
+                        'type': 'object',
+                        'class': obj_class,
+                        'color': color,
+                        'box': obj_box,
+                        'distance': obj_distance,
+                        'position': (obj_x, obj_y)
+                    })
+                except Exception as e:
+                    print(f"Error processing object: {e}")
+                    import traceback
+                    traceback.print_exc()
             
             # Определяем целевой объект в зависимости от режима
             if cursor_controller.following_enabled:
@@ -1942,12 +2383,14 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                     )
             perf_monitor.stop('drawing')
         
-        # Показываем результат в отдельном окне
+        # Убираем вывод в отдельное окно отладки
+        """
         try:
             cv2.imshow('Debug View', frame)
             cv2.waitKey(1)
         except Exception as e:
             print(f"Error showing debug window: {str(e)}")
+        """
         
         perf_monitor.stop('process')
         return target_x, target_y, target_distance, speed, direction, detected_objects
@@ -2003,12 +2446,18 @@ def main():
         print("Press '-' to toggle between absolute and relative mouse movement modes")
         print("Press '+' to toggle following mode")
         print("Press 'Backspace' to toggle attack mode")
+        print("Press '\\' to toggle ignoring people (class 0)")
         print("Press 'F1' to exit")
         print("Press '.' to start/stop recording")
         
         # Сообщаем об игнорируемых классах
         if cursor_controller.ignored_classes:
             print("Currently ignoring: " + ', '.join(cursor_controller.ignored_classes))
+        
+        # Выводим подсказку о том, как игнорировать классы по ID
+        print("\nYou can ignore objects by class name or ID. Examples of common classes:")
+        print("0: person, 56: chair, 58: potted plant, 62: tv, 57: couch, 74: clock, 73: book")
+        print("Use '\\' key to toggle ignoring people (class 0)")
         
         while True:
             try:
@@ -2037,6 +2486,13 @@ def main():
                     if cursor_controller.toggle_attack():
                         print("Toggled attack mode")
                         time.sleep(0.1)
+                elif keyboard.is_pressed('\\'):
+                    # Добавляем или удаляем "person" из списка игнорируемых объектов
+                    if cursor_controller.toggle_class_ignore("person"):
+                        print("Now ignoring people")
+                    else:
+                        print("Now tracking people")
+                    time.sleep(0.1)
                 
                 # Обработка кадра с ограничением частоты до 60 Hz
                 if current_time - last_process_time >= process_interval:
