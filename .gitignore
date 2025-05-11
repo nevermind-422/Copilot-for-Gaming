@@ -31,31 +31,14 @@ ENV/
 *.swp
 *.swo
 
-# Logs and databases
-*.log
-*.sqlite3
-
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Build and CMake
-*.o
-*.obj
-*.exe
-*.dll
-*.so
-*.dylib
-
 # Project specific
 recordings/
-*.csv
-*.dat
+models/*.pt
+temp_detection/
+temp_repo/
+
+# Logs
+*.log
 
 # OS specific
 .DS_Store

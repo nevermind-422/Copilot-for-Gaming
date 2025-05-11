@@ -1,58 +1,50 @@
-# Screen Detection with MediaPipe
+# Reign of Bots
 
-Проект для управления курсором мыши с помощью компьютерного зрения, используя библиотеку MediaPipe для отслеживания движений тела.
+A computer vision application for cursor control using YOLO11 object detection.
 
-## Особенности
+## Features
 
-- Отслеживание движений тела с помощью MediaPipe Holistic
-- Два режима управления курсором:
-  - Абсолютный режим: прямое позиционирование курсора
-  - Относительный режим: управление движением курсора (как в 3D играх)
-- Оптимизированная производительность
-- Визуальное отображение движений и статистики
-- Возможность записи сессий
+- Real-time object detection using YOLO11 model
+- Automatic cursor movement to track objects
+- Transparent overlay with detailed information
+- Auto movement with W key when target is far
+- Multiple tracking modes (absolute/relative cursor movement)
+- Attack mode with automatic clicking
+- Support for ignoring specific object types
 
-## Требования
+## Version 0.026 Changes
 
-- Python 3.8+
-- OpenCV
-- MediaPipe
-- PyWin32
-- NumPy
+- Replaced YOLOv8 with YOLO11 for improved object detection
+- Optimized performance through frame scaling
+- Improved handling of multiple people in frame
+- Added detection for all object types (not just people)
+- Added nearest object targeting
+- Added static list of ignored objects
+- Improved UI element positioning
+- Added "Reign of Bots" title and version in header
+- Fixed GDI resource leaks and improved transparent window
+- Optimized UI rendering performance
 
-## Установка
+## Requirements
 
-1. Клонируйте репозиторий:
-```bash
-git clone https://github.com/yourusername/screen_detection.git
-cd screen_detection
+See requirements.txt for dependencies.
+
+## Controls
+
+- `-` to toggle between absolute and relative mouse movement modes
+- `+` to toggle following mode
+- `Backspace` to toggle attack mode
+- `\` to toggle ignoring people (class 0)
+- `F1` to exit
+- `.` to start/stop recording
+
+## Usage
+
 ```
-
-2. Установите зависимости:
-```bash
-pip install -r requirements.txt
-```
-
-## Использование
-
-Запустите программу:
-```bash
 python main15.py
 ```
 
-### Управление
-
-- `-` - переключение между абсолютным и относительным режимами
-- `F1` - выход из программы
-- `.` - начать/остановить запись
-
-## Производительность
-
-Программа оптимизирована для работы в реальном времени:
-- Упрощенная конфигурация MediaPipe
-- Оптимизированная обработка кадров
-- Эффективное управление курсором
-
-## Лицензия
-
-MIT License 
+To run without cursor control:
+```
+python main15.py --no-cursor-control
+``` 

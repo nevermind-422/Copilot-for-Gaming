@@ -20,7 +20,8 @@ import random
 from threading import Thread
 from ultralytics import YOLO
 
-# Версия 0.025
+# Версия 0.026
+# - Заменена модель детекции YOLOv8 на YOLO11 для улучшения обнаружения объектов
 # - Заменена система распознавания с MediaPipe на YOLOv8 для улучшения дальности детекции
 # - Оптимизирована производительность за счет масштабирования входного кадра
 # - Улучшена обработка нескольких людей в кадре с выбором самого большого
@@ -33,7 +34,7 @@ from ultralytics import YOLO
 # - Исправлены утечки ресурсов GDI, улучшена работа прозрачного окна
 # - Оптимизирована производительность отрисовки интерфейса
 
-# Словарь имен классов COCO для YOLOv8
+# Словарь имен классов COCO для YOLO11
 COCO_CLASSES = {
     0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 4: 'airplane', 5: 'bus', 
     6: 'train', 7: 'truck', 8: 'boat', 9: 'traffic light', 10: 'fire hydrant', 
@@ -91,15 +92,15 @@ absl_logging.set_verbosity(absl_logging.INFO)
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 # Загружаем YOLO модель
-print("Initializing YOLOv8...")
+print("Initializing YOLO11...")
 yolo_model = None
 try:
     # Проверяем наличие папки models
     models_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
     os.makedirs(models_dir, exist_ok=True)
     
-    # Путь к модели
-    model_path = os.path.join(models_dir, "yolov8n.pt")
+    # Путь к модели yolo11n
+    model_path = os.path.join(models_dir, "yolo11n.pt")
     
     # Явно используем CPU
     device = "cpu"
@@ -111,26 +112,21 @@ try:
         # Явно указываем устройство
         yolo_model.to(device)
     else:
-        # Если модели нет, скачиваем её
-        print("YOLOv8n model not found, downloading...")
-        yolo_model = YOLO("yolov8n.pt")
-        # Явно указываем устройство
-        yolo_model.to(device)
-        # Сохраняем модель в папку models
-        os.makedirs(os.path.dirname(model_path), exist_ok=True)
-        yolo_model.export(format="pytorch", half=False)
+        # Если модели нет, сообщаем об ошибке
+        print("YOLO11n model not found. Please make sure yolo11n.pt is in the models directory.")
+        sys.exit(1)
         
-    print(f"YOLOv8 initialized successfully on {device}")
+    print(f"YOLO11 initialized successfully on {device}")
     
 except Exception as e:
-    print(f"Error initializing YOLOv8: {str(e)}")
+    print(f"Error initializing YOLO11: {str(e)}")
     print("Falling back to direct initialization")
     try:
-        yolo_model = YOLO("yolov8n.pt")
+        yolo_model = YOLO("yolo11n.pt")
         yolo_model.to("cpu")
-        print("YOLOv8 initialized using fallback method on CPU")
+        print("YOLO11 initialized using fallback method on CPU")
     except Exception as e2:
-        print(f"Critical error initializing YOLOv8: {str(e2)}")
+        print(f"Critical error initializing YOLO11: {str(e2)}")
         yolo_model = None
 
 # Константы для эмуляции мыши
@@ -884,7 +880,7 @@ class OverlayWindow:
             
             # Добавляем название программы и версию в центре верхней части экрана
             title_text = "Reign of Bots"
-            version_text = "v0.025"
+            version_text = "v0.026"
             
             # Используем Arial italic для заголовка, красный цвет, увеличиваем размер шрифта
             title_font = win32ui.CreateFont({
