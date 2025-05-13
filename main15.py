@@ -18,9 +18,15 @@ import logging
 from absl import logging as absl_logging
 import random
 from threading import Thread
+import torch  # Добавляем импорт PyTorch для проверки CUDA
 from ultralytics import YOLO
+from utils.training import YOLOTrainer
 
-# Версия 0.026
+# Версия 0.028
+# - Исправлены ошибки, приводящие к исчезновению оверлея при длительной работе программы
+# - Добавлена периодическая очистка GDI объектов для предотвращения утечек ресурсов Windows
+# - Исправлен метод UpdateLayeredWindow для корректной работы прозрачного оверлея
+# - Добавлено периодическое принудительное обновление оверлея для стабильной работы
 # - Заменена модель детекции YOLOv8 на YOLO11 для улучшения обнаружения объектов
 # - Заменена система распознавания с MediaPipe на YOLOv8 для улучшения дальности детекции
 # - Оптимизирована производительность за счет масштабирования входного кадра
@@ -33,6 +39,7 @@ from ultralytics import YOLO
 # - Добавлено название "Reign of Bots" и версия в заголовке
 # - Исправлены утечки ресурсов GDI, улучшена работа прозрачного окна
 # - Оптимизирована производительность отрисовки интерфейса
+# - Добавлена автоматическая поддержка CUDA для ускорения инференса
 
 # Словарь имен классов COCO для YOLO11
 COCO_CLASSES = {
@@ -76,6 +83,8 @@ DEFAULT_IGNORED_CLASSES = [
 parser = argparse.ArgumentParser(description='Reign of Bots - Screen Detection')
 parser.add_argument('--no-cursor-control', action='store_true', 
                     help='Disable cursor control features to avoid errors')
+parser.add_argument('--no-cuda', action='store_true',
+                    help='Disable CUDA acceleration even if available')
 args = parser.parse_args()
 
 # Отключение управления курсором
@@ -88,8 +97,18 @@ logging.basicConfig(level=logging.INFO)
 absl_logging.use_absl_handler()
 absl_logging.set_verbosity(absl_logging.INFO)
 
-# Отключаем CUDA в случае проблем с совместимостью
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
+# Проверяем доступность CUDA
+CUDA_AVAILABLE = torch.cuda.is_available() and not args.no_cuda
+if CUDA_AVAILABLE:
+    print(f"CUDA is available: {torch.cuda.get_device_name(0)}")
+    # Разрешаем использование CUDA устройств
+    os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+    DEVICE = "cuda:0"
+else:
+    print("CUDA is not available, using CPU")
+    # Отключаем CUDA в случае проблем с совместимостью
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    DEVICE = "cpu"
 
 # Загружаем YOLO модель
 print("Initializing YOLO11...")
@@ -102,9 +121,9 @@ try:
     # Путь к модели yolo11n
     model_path = os.path.join(models_dir, "yolo11n.pt")
     
-    # Явно используем CPU
-    device = "cpu"
-    print(f"Using device: {device} (CUDA disabled)")
+    # Используем CUDA если доступно
+    device = DEVICE
+    print(f"Using device: {device}")
     
     # Загружаем модель если она есть
     if os.path.exists(model_path):
@@ -123,8 +142,9 @@ except Exception as e:
     print("Falling back to direct initialization")
     try:
         yolo_model = YOLO("yolo11n.pt")
-        yolo_model.to("cpu")
-        print("YOLO11 initialized using fallback method on CPU")
+        # Пробуем установить на доступное устройство
+        yolo_model.to(DEVICE)
+        print(f"YOLO11 initialized using fallback method on {DEVICE}")
     except Exception as e2:
         print(f"Critical error initializing YOLO11: {str(e2)}")
         yolo_model = None
@@ -226,6 +246,10 @@ class OverlayWindow:
         # GDI объекты для очистки
         self.gdi_objects = []
         
+        # Счетчик созданных GDI объектов для отладки утечек ресурсов
+        self.created_gdi_count = 0
+        self.deleted_gdi_count = 0
+        
         # Создаем шрифт
         self.font = win32ui.CreateFont({
             'name': 'Consolas',
@@ -255,6 +279,99 @@ class OverlayWindow:
         self.last_cursor_pos = None
         self.last_target_pos = None
         self.movement_history = deque(maxlen=10)
+        
+        # Кэш для часто используемых GDI ресурсов
+        self.pen_cache = {}
+        self.brush_cache = {}
+        self.font_cache = {}
+        
+        # Время последней очистки кэша
+        self.last_cache_clear_time = time.time()
+        self.cache_clear_interval = 30.0  # Очищать кэш каждые 30 секунд
+
+    def create_pen(self, style, width, color):
+        """Создает перо и добавляет его в список для очистки"""
+        try:
+            # Проверяем кэш
+            key = (style, width, color)
+            if key in self.pen_cache:
+                return self.pen_cache[key]
+                
+            pen = win32ui.CreatePen(style, width, color)
+            self.created_gdi_count += 1
+            self.gdi_objects.append(('pen', pen))
+            self.pen_cache[key] = pen
+            return pen
+        except Exception as e:
+            print(f"Error creating pen: {e}")
+            return None
+
+    def create_brush(self, style, color, hatch=0):
+        """Создает кисть и добавляет ее в список для очистки"""
+        try:
+            # Проверяем кэш
+            key = (style, color, hatch)
+            if key in self.brush_cache:
+                return self.brush_cache[key]
+                
+            brush = win32ui.CreateBrush(style, color, hatch)
+            self.created_gdi_count += 1
+            self.gdi_objects.append(('brush', brush))
+            self.brush_cache[key] = brush
+            return brush
+        except Exception as e:
+            print(f"Error creating brush: {e}")
+            return None
+
+    def create_font(self, params):
+        """Создает шрифт и добавляет его в список для очистки"""
+        try:
+            # Создаем ключ на основе параметров шрифта
+            key = tuple(sorted(params.items()))
+            if key in self.font_cache:
+                return self.font_cache[key]
+                
+            font = win32ui.CreateFont(params)
+            self.created_gdi_count += 1
+            self.gdi_objects.append(('font', font))
+            self.font_cache[key] = font
+            return font
+        except Exception as e:
+            print(f"Error creating font: {e}")
+            return None
+
+    def clean_gdi_objects(self, force=False):
+        """Очищает все созданные GDI объекты"""
+        try:
+            current_time = time.time()
+            # Проверяем, прошло ли достаточно времени для очистки кэша
+            if force or current_time - self.last_cache_clear_time > self.cache_clear_interval:
+                # Сначала очищаем кэши
+                self.pen_cache.clear()
+                self.brush_cache.clear()
+                self.font_cache.clear()
+                self.last_cache_clear_time = current_time
+            
+            # Очищаем все GDI объекты
+            for obj_type, obj in self.gdi_objects:
+                try:
+                    # Проверяем доступные атрибуты объекта для корректного удаления
+                    if hasattr(obj, 'DeleteObject'):
+                        obj.DeleteObject()
+                    elif hasattr(obj, 'delete'):
+                        obj.delete()
+                    self.deleted_gdi_count += 1
+                except Exception as e:
+                    print(f"Error cleaning up GDI object ({obj_type}): {str(e)}")
+            
+            # Очищаем список
+            self.gdi_objects.clear()
+            
+            # Печатаем информацию о количестве созданных/удаленных объектов
+            if force:
+                print(f"GDI objects: created={self.created_gdi_count}, deleted={self.deleted_gdi_count}, diff={self.created_gdi_count-self.deleted_gdi_count}")
+        except Exception as e:
+            print(f"Error in clean_gdi_objects: {str(e)}")
 
     def draw_skeleton(self, landmarks, color):
         """Не используется в YOLO, оставлено для совместимости"""
@@ -265,13 +382,9 @@ class OverlayWindow:
         try:
             if not cursor_pos or not target_pos or speed <= 0:
                 return
-            
-            # Создаем список для отслеживания GDI объектов
-            gdi_objects = []
                 
             # Создаем перо для рисования
-            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0x0000FF)  # Красный цвет, толщина 2
-            gdi_objects.append(pen)
+            pen = self.create_pen(win32con.PS_SOLID, 2, 0x0000FF)  # Красный цвет, толщина 2
             old_pen = self.save_dc.SelectObject(pen)
             
             try:
@@ -317,13 +430,6 @@ class OverlayWindow:
                 # Восстанавливаем старое перо
                 self.save_dc.SelectObject(old_pen)
                 
-                # Очищаем ресурсы
-                for obj in gdi_objects:
-                    try:
-                        obj.DeleteObject()
-                    except:
-                        pass  # Игнорируем ошибку удаления пера
-                
         except Exception as e:
             print(f"Error in draw_movement_vector: {str(e)}")
 
@@ -331,9 +437,6 @@ class OverlayWindow:
         if not box:
             return
         try:
-            # Создаем список для отслеживания GDI объектов
-            gdi_objects = []
-            
             min_x, min_y, max_x, max_y = box
             
             # Валидация координат
@@ -359,9 +462,8 @@ class OverlayWindow:
             
             # Только перо, без кисти (заливки)
             color_value = color[2] << 16 | color[1] << 8 | color[0]
-            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, color_value)
-            gdi_objects.append(pen)
-            self.save_dc.SelectObject(pen)
+            pen = self.create_pen(win32con.PS_SOLID, 2, color_value)
+            old_pen = self.save_dc.SelectObject(pen)
             
             # Убираем заливку: не выбираем кисть вообще
             self.save_dc.Rectangle((min_x, min_y, max_x, max_y))
@@ -369,8 +471,7 @@ class OverlayWindow:
             # Центр
             center_x = (min_x + max_x) // 2
             center_y = (min_y + max_y) // 2
-            yellow_pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0x00FFFF)
-            gdi_objects.append(yellow_pen)
+            yellow_pen = self.create_pen(win32con.PS_SOLID, 2, 0x00FFFF)
             self.save_dc.SelectObject(yellow_pen)
             cross = 10
             self.save_dc.MoveTo((center_x - cross, center_y)); self.save_dc.LineTo((center_x + cross, center_y))
@@ -391,9 +492,7 @@ class OverlayWindow:
                 if info_text:
                     # Рисуем фон для текста
                     text_width = self.save_dc.GetTextExtent(info_text)[0]
-                    bg_color = 0x404040  # Серый фон
-                    brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
-                    gdi_objects.append(brush)
+                    brush = self.create_brush(win32con.BS_SOLID, 0x404040)
                     self.save_dc.SelectObject(brush)
                     self.save_dc.Rectangle((min_x, min_y - 30, min_x + text_width + 10, min_y - 5))
                     
@@ -401,12 +500,8 @@ class OverlayWindow:
                     self.save_dc.SetTextColor(0xFFFFFF)  # Белый текст
                     self.save_dc.TextOut(min_x + 5, min_y - 25, info_text)
             
-            # Очищаем ресурсы
-            for obj in gdi_objects:
-                try:
-                    obj.DeleteObject()
-                except:
-                    pass
+            # Восстанавливаем оригинальное перо
+            self.save_dc.SelectObject(old_pen)
                     
         except Exception as e:
             print(f"Error in draw_bounding_box: {e}")
@@ -420,9 +515,6 @@ class OverlayWindow:
     def draw_crosshair(self, cursor_controller):
         """Рисует прицел в зависимости от режима"""
         try:
-            # Создаем список для отслеживания GDI объектов
-            gdi_objects = []
-            
             # Получаем цвет прицела в зависимости от режима
             color = self.crosshair_relative_color if cursor_controller.relative_mode else self.crosshair_color
             
@@ -431,124 +523,73 @@ class OverlayWindow:
             center_y = cursor_controller.center_y
             
             # Создаем перо для линий прицела
-            pen = win32ui.CreatePen(win32con.PS_SOLID, self.crosshair_thickness, color)
-            gdi_objects.append(pen)
-            self.save_dc.SelectObject(pen)
+            pen = self.create_pen(win32con.PS_SOLID, self.crosshair_thickness, color)
+            old_pen = self.save_dc.SelectObject(pen)
             
-            # Рисуем горизонтальную линию
+            # Рисуем прицел (горизонтальная и вертикальная линии)
             self.save_dc.MoveTo((center_x - self.crosshair_size, center_y))
             self.save_dc.LineTo((center_x + self.crosshair_size, center_y))
             
-            # Рисуем вертикальную линию
             self.save_dc.MoveTo((center_x, center_y - self.crosshair_size))
             self.save_dc.LineTo((center_x, center_y + self.crosshair_size))
             
-            # Рисуем круги для относительного режима
-            if cursor_controller.relative_mode:
-                # Внешний круг
+            # Рисуем точки на концах линий
+            for point in [
+                (center_x - self.crosshair_size, center_y),
+                (center_x + self.crosshair_size, center_y),
+                (center_x, center_y - self.crosshair_size),
+                (center_x, center_y + self.crosshair_size)
+            ]:
                 self.save_dc.Ellipse((
-                    center_x - self.crosshair_size * 2,
-                    center_y - self.crosshair_size * 2,
-                    center_x + self.crosshair_size * 2,
-                    center_y + self.crosshair_size * 2
-                ))
-                # Внутренний круг
-                self.save_dc.Ellipse((
-                    center_x - self.crosshair_size,
-                    center_y - self.crosshair_size,
-                    center_x + self.crosshair_size,
-                    center_y + self.crosshair_size
-                ))
-                
-                # Добавляем точки на концах линий
-                dot_size = 4
-                self.save_dc.Ellipse((
-                    center_x - self.crosshair_size - dot_size,
-                    center_y - dot_size,
-                    center_x - self.crosshair_size + dot_size,
-                    center_y + dot_size
-                ))
-                self.save_dc.Ellipse((
-                    center_x + self.crosshair_size - dot_size,
-                    center_y - dot_size,
-                    center_x + self.crosshair_size + dot_size,
-                    center_y + dot_size
-                ))
-                self.save_dc.Ellipse((
-                    center_x - dot_size,
-                    center_y - self.crosshair_size - dot_size,
-                    center_x + dot_size,
-                    center_y - self.crosshair_size + dot_size
-                ))
-                self.save_dc.Ellipse((
-                    center_x - dot_size,
-                    center_y + self.crosshair_size - dot_size,
-                    center_x + dot_size,
-                    center_y + self.crosshair_size + dot_size
+                    point[0] - self.crosshair_dot_radius,
+                    point[1] - self.crosshair_dot_radius,
+                    point[0] + self.crosshair_dot_radius,
+                    point[1] + self.crosshair_dot_radius
                 ))
             
-            # Очищаем ресурсы
-            for obj in gdi_objects:
-                try:
-                    obj.DeleteObject()
-                except:
-                    pass
-                    
+            # Восстанавливаем старое перо
+            self.save_dc.SelectObject(old_pen)
+            
         except Exception as e:
             print(f"Error drawing crosshair: {str(e)}")
 
     def draw_following_status(self, cursor_controller):
+        """Рисует индикатор статуса следования за целью"""
         try:
-            # Создаем список для отслеживания GDI объектов
-            gdi_objects = []
+            # Позиция и размеры блока индикатора
+            block_width = 240
+            block_height = 50
+            block_x = 460  # Уменьшаем с 600 до 460
+            block_y = 50
             
-            # Позиция и размеры кнопки
-            button_width = 240
-            button_height = 80
-            button_x = 460  # Смещаем левее с 600 до 460
-            button_y = 50  # Располагаем рядом с отладочной информацией
+            # Цвета для индикаторов состояний
+            active_color = self.following_color
+            inactive_color = self.following_disabled_color
             
-            # Цвета для кнопки
-            button_bg_color = 0x404040  # Серый фон
-            button_border_active = cursor_controller.following_enabled and self.following_color or self.following_disabled_color
-            button_text_color = 0xFFFFFF  # Белый текст
+            # Определяем цвет в зависимости от статуса
+            status_color = active_color if cursor_controller.following_enabled else inactive_color
             
-            # Рисуем фон кнопки
-            brush = win32ui.CreateBrush(win32con.BS_SOLID, button_bg_color, 0)
-            gdi_objects.append(brush)
+            # Рисуем фон блока
+            brush = self.create_brush(win32con.BS_SOLID, 0x404040)  # Серый фон
             self.save_dc.SelectObject(brush)
-            self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
+            self.save_dc.Rectangle((block_x, block_y, block_x + block_width, block_y + block_height))
             
-            # Рисуем рамку кнопки
-            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, button_border_active)
-            gdi_objects.append(pen)
+            # Рисуем рамку с цветом статуса
+            pen = self.create_pen(win32con.PS_SOLID, 2, status_color)
             self.save_dc.SelectObject(pen)
-            self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
+            self.save_dc.Rectangle((block_x, block_y, block_x + block_width, block_y + block_height))
             
-            # Рисуем название режима
-            self.save_dc.SetTextColor(button_text_color)
-            self.save_dc.TextOut(button_x + 10, button_y + 10, "FOLLOWING MODE")
+            # Рисуем текст статуса
+            status_text = "FOLLOWING: ON" if cursor_controller.following_enabled else "FOLLOWING: OFF"
+            self.save_dc.SetTextColor(status_color)
             
-            # Рисуем статус режима
-            self.save_dc.SetTextColor(button_border_active)
-            following_status = "ON" if cursor_controller.following_enabled else "OFF"
-            self.save_dc.TextOut(button_x + 10, button_y + 30, following_status)
+            # Позиционируем текст по центру блока
+            text_width = self.save_dc.GetTextExtent(status_text)[0]
+            text_x = block_x + (block_width - text_width) // 2
+            text_y = block_y + 15
             
-            # Добавляем подсказку по клавише справа от кнопки
-            hotkey_text = ": +"
-            self.save_dc.SetTextColor(0x00FF00)  # Зеленый цвет для подсказки
-            hotkey_x = button_x + button_width + 10
-            self.save_dc.TextOut(hotkey_x, button_y + 30, hotkey_text)
-            
-            # Рисуем отдельный индикатор для режима выбора цели
-            self.draw_target_mode(cursor_controller, button_x, button_y + 50)
-            
-            # Очищаем ресурсы
-            for obj in gdi_objects:
-                try:
-                    obj.DeleteObject()
-                except:
-                    pass
+            # Рисуем текст
+            self.save_dc.TextOut(text_x, text_y, status_text)
             
         except Exception as e:
             print(f"Error drawing following status: {str(e)}")
@@ -846,14 +887,59 @@ class OverlayWindow:
         except Exception as e:
             print(f"Error drawing ignored classes: {str(e)}")
 
+    def draw_training_status(self, is_active, is_fine_tuning=False):
+        """Рисует индикатор статуса сбора данных для обучения модели"""
+        try:
+            # Позиция и размеры блока индикатора
+            block_width = 300
+            block_height = 130
+            block_x = 460  # Размещаем под статусом атаки (было 600)
+            block_y = 550  # Ниже блока статуса движения (было 450)
+            
+            # Создаем цвета для блока
+            bg_color = 0x404040  # Серый фон
+            border_color = 0x00FFFF  # Голубая рамка для активного сбора
+            inactive_border = 0x808080  # Серая рамка для неактивного сбора
+            
+            # Рисуем фон блока
+            brush = self.create_brush(win32con.BS_SOLID, bg_color)
+            self.save_dc.SelectObject(brush)
+            self.save_dc.Rectangle((block_x, block_y, block_x + block_width, block_y + block_height))
+            
+            # Рисуем рамку блока
+            border_pen = self.create_pen(win32con.PS_SOLID, 2, border_color if is_active else inactive_border)
+            self.save_dc.SelectObject(border_pen)
+            self.save_dc.Rectangle((block_x, block_y, block_x + block_width, block_y + block_height))
+            
+            # Рисуем заголовок
+            self.save_dc.SetTextColor(0xFFFFFF)  # Белый текст
+            self.save_dc.TextOut(block_x + 10, block_y + 10, "TRAINING STATUS")
+            
+            # Рисуем статус сбора данных
+            status_text = "COLLECTING DATA (F6)" if is_active else "COLLECTION OFF"
+            status_color = 0x00FFFF if is_active else 0x808080  # Желтый при активном, серый при неактивном
+            self.save_dc.SetTextColor(status_color)
+            self.save_dc.TextOut(block_x + 10, block_y + 40, status_text)
+            
+            # Рисуем статус обучения модели
+            ft_status = "FINE-TUNING (F7)" if is_fine_tuning else "FINE-TUNING OFF"
+            ft_color = 0x0000FF if is_fine_tuning else 0x808080  # Красный при активном, серый при неактивном
+            self.save_dc.SetTextColor(ft_color)
+            self.save_dc.TextOut(block_x + 10, block_y + 70, ft_status)
+            
+            # Добавляем подсказку для пользователя
+            hint_text = "Move cursor over bags" if is_active else "Press F6 to collect data"
+            self.save_dc.SetTextColor(0x00FF00)  # Зеленый цвет для подсказки
+            self.save_dc.TextOut(block_x + 10, block_y + 100, hint_text)
+            
+        except Exception as e:
+            print(f"Error drawing training status: {str(e)}")
+
     def update_info(self, cursor_pos, target_pos, distance, movement, detected_objects=None, fps=0, perf_stats=None, speed=0, direction=0, cursor_controller=None):
         current_time = time.time()
         if current_time - self.last_update_time < self.update_interval:
             return
         self.last_update_time = current_time
-        
-        # Список для отслеживания созданных GDI объектов
-        gdi_objects = []
         
         try:
             # Заполняем фон с прозрачностью - используем RGBA формат
@@ -862,10 +948,8 @@ class OverlayWindow:
             self.save_dc.FillSolidRect((0, 0, self.screen_width, self.screen_height), 0x00000000)  # Полностью прозрачный фон
             
             # Затем поверх рисуем полупрозрачную темно-серую подложку для элементов интерфейса
-            brush = win32ui.CreateBrush(win32con.BS_SOLID, 0x202020, 0)
-            gdi_objects.append(('brush', brush))
-            alpha_pen = win32ui.CreatePen(win32con.PS_SOLID, 1, 0x202020)
-            gdi_objects.append(('pen', alpha_pen))
+            brush = self.create_brush(win32con.BS_SOLID, 0x202020)
+            alpha_pen = self.create_pen(win32con.PS_SOLID, 1, 0x202020)
             
             self.save_dc.SelectObject(brush)
             self.save_dc.SelectObject(alpha_pen)
@@ -880,17 +964,16 @@ class OverlayWindow:
             
             # Добавляем название программы и версию в центре верхней части экрана
             title_text = "Reign of Bots"
-            version_text = "v0.026"
+            version_text = "v0.028"
             
             # Используем Arial italic для заголовка, красный цвет, увеличиваем размер шрифта
-            title_font = win32ui.CreateFont({
+            title_font = self.create_font({
                 'name': 'Arial',
                 'height': 80,  # Значительно увеличиваем размер шрифта для лучшей видимости
                 'weight': win32con.FW_BOLD,
                 'italic': True,
                 'charset': win32con.ANSI_CHARSET
             })
-            gdi_objects.append(('font', title_font))
             
             # Сначала выбираем шрифт
             self.save_dc.SelectObject(title_font)
@@ -910,13 +993,12 @@ class OverlayWindow:
             self.save_dc.TextOut(center_x, title_y, title_text)
             
             # Добавляем версию под заголовком маленьким текстом
-            version_font = win32ui.CreateFont({
+            version_font = self.create_font({
                 'name': 'Consolas',
                 'height': 14,  # Маленький размер текста
                 'weight': win32con.FW_NORMAL,
                 'charset': win32con.ANSI_CHARSET
             })
-            gdi_objects.append(('font', version_font))
             
             self.save_dc.SelectObject(version_font)
             version_width = self.save_dc.GetTextExtent(version_text)[0]
@@ -933,6 +1015,9 @@ class OverlayWindow:
                 self.draw_attack_status(cursor_controller)
                 self.draw_person_ignore_status(cursor_controller)  # Добавляем индикатор игнорирования Persons
                 
+                # Добавляем индикатор статуса обучения
+                self.draw_training_status(training_active, fine_tuning_active)
+                
                 # Добавляем статус информации про клавишу W и расстояние
                 try:
                     # Позиция и размеры блока информации
@@ -948,14 +1033,12 @@ class OverlayWindow:
                     warning_color = 0x0000FF  # Красный для предупреждений
                     
                     # Рисуем фон блока
-                    brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
-                    gdi_objects.append(('brush', brush))
+                    brush = self.create_brush(win32con.BS_SOLID, bg_color)
                     self.save_dc.SelectObject(brush)
                     self.save_dc.Rectangle((info_x, info_y, info_x + info_width, info_y + info_height))
                     
                     # Рисуем рамку блока
-                    pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0xFFFFFF)  # Белая рамка
-                    gdi_objects.append(('pen', pen))
+                    pen = self.create_pen(win32con.PS_SOLID, 2, 0xFFFFFF)  # Белая рамка
                     self.save_dc.SelectObject(pen)
                     self.save_dc.Rectangle((info_x, info_y, info_x + info_width, info_y + info_height))
                     
@@ -1014,8 +1097,7 @@ class OverlayWindow:
                                 if obj.get('is_target', False):
                                     # Рисуем дополнительную рамку для выделения цели
                                     min_x, min_y, max_x, max_y = box
-                                    pen = win32ui.CreatePen(win32con.PS_SOLID, 3, 0x00FFFF)  # Голубая рамка
-                                    gdi_objects.append(('pen', pen))
+                                    pen = self.create_pen(win32con.PS_SOLID, 3, 0x00FFFF)  # Голубая рамка
                                     self.save_dc.SelectObject(pen)
                                     self.save_dc.Rectangle((min_x-5, min_y-5, max_x+5, max_y+5))
                                     
@@ -1055,10 +1137,7 @@ class OverlayWindow:
             # Счетчики производительности
             if perf_stats:
                 self.save_dc.SetTextColor(0x00FF00)
-                text = "Performance (ms):\n"
-                text += "Component        Current    Avg\n"
-                text += "----------------------------\n"
-                
+                i = 0  # Инициализируем переменную i перед использованием
                 try:
                     for name, counter in perf_stats.items():
                         short_name = {
@@ -1069,109 +1148,107 @@ class OverlayWindow:
                             'overlay': 'Overlay',
                             'cursor': 'Cursor'
                         }.get(name, name)
-                            
-                        try:
-                            current_ms = round(counter.current_time * 1000, 1)
-                            avg_ms = round(counter.avg_time * 1000, 1)
-                            current_ms = min(max(current_ms, 0), 9999.9)
-                            avg_ms = min(max(avg_ms, 0), 9999.9)
-                            text += f"{short_name:<12} {current_ms:>8.1f} {avg_ms:>8.1f}\n"
-                        except Exception as e:
-                            print(f"Error formatting perf stat for {name}: {str(e)}")
-                            text += f"{short_name:<12} {"error":>8} {"error":>8}\n"
-                    
-                    self.save_dc.DrawText(
-                        text,
-                        (110, 210, 460, 490),
-                        win32con.DT_LEFT | win32con.DT_TOP
-                    )
+                        
+                        # Выводим данные о производительности
+                        current = counter.current_time * 1000
+                        avg = counter.avg_time * 1000
+                        self.save_dc.TextOut(110, 210 + i * 20, f"{short_name.ljust(15)} {current:6.1f}ms  {avg:6.1f}ms")
+                        i += 1
                 except Exception as e:
-                    print(f"Error drawing performance stats: {str(e)}")
-                    
-            self.mfc_dc.BitBlt(
-                (0, 0), (self.screen_width, self.screen_height),
-                self.save_dc,
-                (0, 0),
-                win32con.SRCCOPY
-            )
+                    print(f"Error printing performance stats: {str(e)}")
             
-            # Используем UpdateLayeredWindow вместо SetLayeredWindowAttributes
+            # Отображаем GDI ресурсы для отладки
+            self.save_dc.SetTextColor(0x00FFFF)
+            gdi_count = self.created_gdi_count - self.deleted_gdi_count
+            # Меняем цвет на красный, если число объектов превышает 100
+            if gdi_count > 100:
+                self.save_dc.SetTextColor(0x0000FF)  # Красный
+            self.save_dc.TextOut(110, 420, f"GDI Objects: {gdi_count}")
+            self.save_dc.TextOut(110, 440, f"Created: {self.created_gdi_count}, Deleted: {self.deleted_gdi_count}")
+            
+            # Обновляем содержимое окна с помощью UpdateLayeredWindow
             try:
-                # Создаем источник DC
-                srcdc = self.save_dc.GetSafeHdc()
+                # Создаем совместимые с win32gui структуры вместо POINT и SIZE
+                # Вместо win32gui.POINT и win32gui.SIZE используем кортежи
+                src_point = (0, 0)  # Координаты источника
+                dst_point = (0, 0)  # Координаты назначения
+                size = (self.screen_width, self.screen_height)  # Размер
                 
-                # Параметры смешивания - используем 150 для общей прозрачности (было 255) 
-                # и AC_SRC_ALPHA, чтобы учитывать альфа-канал пикселей
+                # Получаем DC источника
+                src_dc = self.save_dc.GetSafeHdc()
+                
+                # Создаем структуру BLENDFUNCTION для смешивания
                 blend_function = (win32con.AC_SRC_OVER, 0, 150, win32con.AC_SRC_ALPHA)
                 
-                # Координаты
-                pt_src = (0, 0)
-                pt_dst = (0, 0)
-                
-                # Размер
-                size = (self.screen_width, self.screen_height)
-                
-                # Вызываем UpdateLayeredWindow
+                # Используем UpdateLayeredWindow без POINT и SIZE
                 win32gui.UpdateLayeredWindow(
+                    self.hwnd,  # Хендл окна
+                    win32gui.GetDC(0),  # DC экрана
+                    dst_point,  # Координаты на экране
+                    size,  # Размер окна
+                    src_dc,  # DC источника
+                    src_point,  # Координаты в источнике
+                    0,  # Цвет прозрачности (не используется при альфа-смешивании)
+                    blend_function,  # Параметры смешивания
+                    win32con.ULW_ALPHA  # Тип смешивания
+                )
+                
+                # Устанавливаем окно поверх всех окон
+                win32gui.SetWindowPos(
                     self.hwnd,
-                    win32gui.GetDC(0),  # Используем DC экрана
-                    pt_dst,
-                    size,
-                    srcdc,
-                    pt_src,
-                    0,
-                    blend_function,
-                    win32con.ULW_ALPHA
+                    win32con.HWND_TOPMOST,
+                    0, 0, 0, 0,
+                    win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE
                 )
             except Exception as e:
-                print(f"Error in UpdateLayeredWindow: {e}")
+                print(f"Error in UpdateLayeredWindow: {str(e)}")
             
-            win32gui.SetWindowPos(
-                self.hwnd,
-                win32con.HWND_TOPMOST,
-                0, 0, 0, 0,
-                win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE
-            )
+            # Очищаем временные GDI объекты после каждого обновления
+            self.clean_gdi_objects()
+            
         except Exception as e:
-            print(f"Error updating overlay: {str(e)}")
-            import traceback
-            traceback.print_exc()
-        finally:
-            # Освобождаем все созданные GDI объекты
-            for obj_type, obj in gdi_objects:
-                try:
-                    if obj_type == 'brush':
-                        if hasattr(obj, 'DeleteObject'):
-                            obj.DeleteObject()
-                        elif hasattr(obj, 'delete'):
-                            obj.delete()
-                    elif obj_type == 'pen':
-                        if hasattr(obj, 'DeleteObject'):
-                            obj.DeleteObject()
-                        elif hasattr(obj, 'delete'):
-                            obj.delete()
-                    elif obj_type == 'font':
-                        # Для шрифтов нет явного метода удаления, они освобождаются автоматически
-                        pass
-                except Exception as e:
-                    print(f"Error cleaning up GDI object ({obj_type}): {str(e)}")
+            print(f"Error in update_info: {str(e)}")
+            # В случае ошибки принудительно очищаем все объекты
+            self.clean_gdi_objects(force=True)
 
     def __del__(self):
         try:
+            # Принудительно очищаем все GDI объекты
+            self.clean_gdi_objects(force=True)
+            
             # Освобождаем ресурсы в правильном порядке
-            if hasattr(self, 'save_dc'):
-                self.save_dc.DeleteDC()
-            if hasattr(self, 'mfc_dc'):
-                self.mfc_dc.DeleteDC()
-            if hasattr(self, 'hdc'):
-                win32gui.ReleaseDC(self.hwnd, self.hdc)
-            if hasattr(self, 'bitmap'):
+            if hasattr(self, 'save_dc') and self.save_dc:
+                try:
+                    self.save_dc.DeleteDC()
+                except:
+                    pass
+                    
+            if hasattr(self, 'mfc_dc') and self.mfc_dc:
+                try:
+                    self.mfc_dc.DeleteDC()
+                except:
+                    pass
+                    
+            if hasattr(self, 'hdc') and self.hdc:
+                try:
+                    win32gui.ReleaseDC(self.hwnd, self.hdc)
+                except:
+                    pass
+                    
+            if hasattr(self, 'bitmap') and self.bitmap:
                 try:
                     win32gui.DeleteObject(self.bitmap.GetHandle())
                 except:
                     pass  # Игнорируем ошибку удаления битмапа
-            if hasattr(self, 'hwnd'):
-                win32gui.DestroyWindow(self.hwnd)
+                    
+            if hasattr(self, 'hwnd') and self.hwnd:
+                try:
+                    win32gui.DestroyWindow(self.hwnd)
+                except:
+                    pass
+                
+            print(f"OverlayWindow cleanup complete. GDI objects: created={self.created_gdi_count}, deleted={self.deleted_gdi_count}")
+            
         except Exception as e:
             print(f"Error in OverlayWindow cleanup: {str(e)}")
             pass  # Игнорируем ошибки при очистке
@@ -1930,21 +2007,31 @@ class YOLOPersonDetector:
         self.last_results = None
         self.lock = Thread()
         
-        # Принудительно используем CPU
-        self.cuda_available = False
-        self.device = "cpu"
-        print(f"YOLOPersonDetector initialized on {self.device} (CUDA disabled)")
+        # Используем доступное устройство (CUDA или CPU)
+        self.cuda_available = CUDA_AVAILABLE
+        self.device = DEVICE
+        print(f"YOLOPersonDetector initialized on {self.device}")
+        
+        # Добавляем поддержку пользовательских классов (вне COCO)
+        self.custom_classes = {
+            80: 'bag',  # Мешок
+        }
         
         # Убедимся, что модель работает на правильном устройстве
         if self.model:
             try:
                 self.model.to(self.device)
                 print(f"Model moved to {self.device}")
+                
+                # Добавляем пользовательские классы в модель, если они там еще нет
+                if hasattr(self.model, 'names'):
+                    for class_id, class_name in self.custom_classes.items():
+                        if class_id not in self.model.names:
+                            print(f"Adding custom class '{class_name}' with ID {class_id} to model names")
+                            self.model.names[class_id] = class_name
             except Exception as e:
                 print(f"Warning: Could not set device to {self.device}: {str(e)}")
-                
-        print(f"YOLOPersonDetector initialized on {self.device}")
-        
+    
     def detect(self, frame):
         """Обнаружение людей на кадре"""
         if frame is None or self.model is None:
@@ -1962,12 +2049,12 @@ class YOLOPersonDetector:
             import time
             start_time = time.time()
             
-            # Используем выбранное устройство
-            results = self.model(resized_frame, conf=self.conf, classes=0, device=self.device)  # class 0 = person
+            # Всегда используем CPU для предотвращения ошибки с torchvision::nms на CUDA
+            results = self.model(resized_frame, conf=self.conf, classes=0, device="cpu")  # class 0 = person
             
             # Рассчитываем время работы
             inference_time = (time.time() - start_time) * 1000  # в мс
-            print(f"Detection time: {inference_time:.2f}ms on {self.device}")
+            print(f"Detection time: {inference_time:.2f}ms on CPU (forced)")
             
             self.last_results = results
             self.last_frame = frame
@@ -1998,12 +2085,12 @@ class YOLOPersonDetector:
             import time
             start_time = time.time()
             
-            # Принудительно используем CPU режим
+            # Всегда используем CPU для предотвращения ошибки с torchvision::nms на CUDA
             results = self.model(resized_frame, conf=self.conf, device="cpu", verbose=False)
             
             # Рассчитываем время работы
             inference_time = (time.time() - start_time) * 1000  # в мс
-            print(f"All objects detection time: {inference_time:.2f}ms on CPU")
+            print(f"All objects detection time: {inference_time:.2f}ms on CPU (forced)")
             
             self.last_results = results
             self.last_frame = frame
@@ -2028,8 +2115,9 @@ class YOLOPersonDetector:
         if results is None or len(results) == 0:
             return []
             
-        # Используем глобальный словарь классов COCO
-        coco_classes = COCO_CLASSES
+        # Используем глобальный словарь классов COCO + пользовательские классы
+        coco_classes = COCO_CLASSES.copy()
+        coco_classes.update(self.custom_classes)
             
         # Находим все объекты
         objects = []
@@ -2225,8 +2313,14 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                         'car': (0, 0, 255),     # Красный для машин
                         'dog': (255, 255, 0),   # Голубой для собак
                         'cat': (255, 0, 255),   # Розовый для кошек
+                        'bag': (0, 255, 255),   # Желтый для мешков
                     }
                     color = color_map.get(obj_class.lower(), (255, 255, 255))  # Белый для остальных
+                    
+                    # Если активен режим сбора данных для обучения, меняем информацию об объекте
+                    if training_active:
+                        obj_class = "bag (F6 training)"
+                        color = (0, 255, 255)  # Желтый для обучения
                     
                     # Сохраняем информацию об объекте
                     detected_objects.append({
@@ -2243,7 +2337,7 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                     traceback.print_exc()
             
             # Определяем целевой объект в зависимости от режима
-            if cursor_controller.following_enabled:
+            if cursor_controller.following_enabled and not training_active:
                 # Режим следования за ближайшим объектом
                 # Фильтруем объекты, исключая те, которые находятся в списке игнорируемых
                 valid_objects = [obj for obj in detected_objects 
@@ -2267,7 +2361,7 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                     # Нет допустимых объектов
                     target_box = None
                     target_x, target_y, target_distance = None, None, None
-            else:
+            elif not training_active:
                 # Фильтруем объекты, исключая те, которые находятся в списке игнорируемых
                 valid_objects = [obj for obj in detected_objects 
                                if obj['class'].lower() not in [cls.lower() for cls in cursor_controller.ignored_classes]]
@@ -2319,8 +2413,14 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
         # Важно: всегда вызываем handle_auto_movement, передавая текущее расстояние и box (или None)
         cursor_controller.handle_auto_movement(target_distance, target_box)
         
+        # В режиме обучения добавляем информацию в кадр
+        if training_active:
+            cv2.rectangle(frame, (0, 0), (frame.shape[1], 40), (0, 0, 0), -1)
+            status_text = f"TRAINING MODE: Collecting bag data, {trainer.frames_to_save} frames remaining"
+            cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        
         # Отрисовка результатов и перемещение курсора
-        if target_box and target_x is not None and target_y is not None:
+        if target_box and target_x is not None and target_y is not None and not training_active:
             perf_monitor.start('cursor')
             cursor_x, cursor_y = cursor_controller.move_cursor(target_x, target_y)
             perf_monitor.stop('cursor')
@@ -2345,7 +2445,7 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                 text = f"{class_name}: {distance:.2f}m"
                 
                 # Добавляем текст о выбранной цели
-                if obj.get('is_target', False):
+                if obj.get('is_target', False) and not training_active:
                     text += " [TARGET]"
                     # Рисуем более толстую рамку для целевого объекта
                     cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 4)
@@ -2378,6 +2478,36 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                         tipLength=0.2
                     )
             perf_monitor.stop('drawing')
+        else:
+            # В режиме обучения или если нет цели, просто рисуем все объекты
+            perf_monitor.start('drawing')
+            for obj in detected_objects:
+                box = obj['box']
+                color = obj['color']
+                
+                # Преобразуем цвет из BGR в RGB
+                display_color = (color[2], color[1], color[0])
+                
+                # Рисуем рамку
+                cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 2)
+                
+                # Рисуем информацию о классе и расстоянии
+                class_name = obj['class']
+                distance = obj['distance']
+                text = f"{class_name}: {distance:.2f}m"
+                
+                # Размещаем текст над рамкой
+                text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+                text_x = box[0]
+                text_y = box[1] - 10 if box[1] > 30 else box[1] + 30
+                cv2.rectangle(frame, (text_x, text_y - text_size[1] - 10), 
+                              (text_x + text_size[0] + 10, text_y), display_color, -1)
+                cv2.putText(frame, text, (text_x + 5, text_y - 5), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            perf_monitor.stop('drawing')
+            
+            # Используем текущую позицию курсора для отображения
+            cursor_pos = win32api.GetCursorPos()
         
         # Убираем вывод в отдельное окно отладки
         """
@@ -2399,6 +2529,88 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
         # Гарантируем вызов handle_auto_movement даже при ошибке
         cursor_controller.handle_auto_movement(None, None)
         return None, None, None, 0.0, 0.0, []
+
+# Initialize the trainer if YOLO model is available
+trainer = None
+training_active = False
+fine_tuning_active = False
+
+def initialize_trainer():
+    """Initialize the YOLOTrainer with the current YOLO model"""
+    global trainer, yolo_model
+    
+    if yolo_model is not None:
+        trainer = YOLOTrainer(model=yolo_model, model_path=model_path)
+        print("YOLOTrainer initialized successfully")
+        return True
+    else:
+        print("Failed to initialize YOLOTrainer: No YOLO model available")
+        return False
+        
+def toggle_training_collection():
+    """Toggle training data collection on/off"""
+    global training_active, trainer
+    
+    if trainer is None:
+        if not initialize_trainer():
+            print("Cannot start training collection: failed to initialize trainer")
+            return False
+    
+    if training_active:
+        trainer.stop_collection()
+        training_active = False
+        print("Training data collection stopped")
+    else:
+        # Start collecting data, all objects will be labeled as class 80 (bag)
+        trainer.start_collection(frames_to_collect=100)
+        training_active = True
+        print("Training data collection for new class 'Bag' started")
+        print("All detected objects will be automatically labeled as 'bag' (class 80)")
+    
+    return training_active
+
+def start_fine_tuning():
+    """Start fine-tuning the model with collected data"""
+    global trainer, fine_tuning_active, yolo_model
+    
+    if trainer is None:
+        if not initialize_trainer():
+            print("Cannot start fine-tuning: failed to initialize trainer")
+            return False
+    
+    if fine_tuning_active:
+        print("Fine-tuning is already in progress")
+        return False
+    
+    # Start fine-tuning in a separate thread
+    def fine_tuning_thread():
+        global fine_tuning_active, yolo_model
+        
+        fine_tuning_active = True
+        print("Starting model fine-tuning with new class 'Bag'...")
+        
+        # Используем доступное устройство для дообучения
+        success = trainer.fine_tune(epochs=5, batch_size=4, device=DEVICE)
+        
+        if success:
+            # Update the main model with the fine-tuned one
+            yolo_model = trainer.model
+            
+            # Update the detector with the new model
+            if hasattr(process_frame, "detector") and process_frame.detector:
+                process_frame.detector.model = yolo_model
+                process_frame.detector.model.to(process_frame.detector.device)
+                print("Updated detector with fine-tuned model")
+            
+            print("Model fine-tuning completed successfully!")
+            print("New class 'Bag' (ID 80) has been added to the model")
+        else:
+            print("Model fine-tuning failed")
+        
+        fine_tuning_active = False
+    
+    Thread(target=fine_tuning_thread, daemon=True).start()
+    return True
 
 def main():
     try:
@@ -2438,6 +2650,12 @@ def main():
         last_process_time = time.time()
         process_interval = 1.0 / 60.0  # 60 Hz для process_frame
         
+        # Добавляем счетчики для периодической очистки GDI объектов и принудительного обновления оверлея
+        last_gdi_clean_time = time.time()
+        gdi_clean_interval = 5.0  # Очистка GDI объектов каждые 5 секунд
+        last_overlay_refresh_time = time.time()
+        overlay_refresh_interval = 10.0  # Принудительное обновление оверлея каждые 10 секунд
+        
         print("Starting main loop...")
         print("Press '-' to toggle between absolute and relative mouse movement modes")
         print("Press '+' to toggle following mode")
@@ -2445,6 +2663,8 @@ def main():
         print("Press '\\' to toggle ignoring people (class 0)")
         print("Press 'F1' to exit")
         print("Press '.' to start/stop recording")
+        print("Press 'F6' to start/stop training data collection for bags")
+        print("Press 'F7' to start fine-tuning the model with collected data")
         
         # Сообщаем об игнорируемых классах
         if cursor_controller.ignored_classes:
@@ -2489,6 +2709,18 @@ def main():
                     else:
                         print("Now tracking people")
                     time.sleep(0.1)
+                # Add these keyboard handlers
+                elif keyboard.is_pressed('f6'):
+                    if toggle_training_collection():
+                        print("Started collecting training data for new class 'Bag'")
+                        print("All detected objects will be labeled as 'bag' class (ID 80)")
+                    else:
+                        print("Stopped collecting training data")
+                    time.sleep(0.1)
+                elif keyboard.is_pressed('f7'):
+                    if start_fine_tuning():
+                        print("Started fine-tuning process with new class 'Bag'")
+                    time.sleep(0.1)
                 
                 # Обработка кадра с ограничением частоты до 60 Hz
                 if current_time - last_process_time >= process_interval:
@@ -2508,6 +2740,7 @@ def main():
                             movement = (int(target_pos[0] - cursor_pos[0]), int(target_pos[1] - cursor_pos[1]))
                         else:
                             movement = (0, 0)
+                            cursor_pos = win32api.GetCursorPos()  # Get current cursor position
                             
                         # Обновление оверлея
                         perf_monitor.start('overlay')
@@ -2524,6 +2757,17 @@ def main():
                             traceback.print_exc()
                         finally:
                             perf_monitor.stop('overlay')
+                        
+                        # Handle training data collection if active
+                        if training_active and trainer is not None:
+                            # Получаем текущую позицию курсора для аннотации мешка
+                            current_cursor_pos = win32api.GetCursorPos()
+                            # Передаем кадр, результаты детекции и позицию курсора
+                            trainer.process_frame(
+                                frame, 
+                                process_frame.detector.last_results,
+                                current_cursor_pos
+                            )
                             
                         # Обновляем время последней обработки
                         last_process_time = current_time
@@ -2552,6 +2796,28 @@ def main():
                         print(f"Error writing frame: {str(e)}")
                         recorder.stop_recording()
                 
+                # Периодическая очистка GDI объектов для предотвращения утечек
+                if current_time - last_gdi_clean_time >= gdi_clean_interval:
+                    try:
+                        overlay.clean_gdi_objects(force=True)
+                        last_gdi_clean_time = current_time
+                    except Exception as e:
+                        print(f"Error during GDI cleanup: {str(e)}")
+                
+                # Принудительное обновление оверлея, чтобы избежать исчезновения
+                if current_time - last_overlay_refresh_time >= overlay_refresh_interval:
+                    try:
+                        # Принудительно обновляем оверлей с текущими данными
+                        overlay.update_info(
+                            cursor_pos, target_pos, distance,
+                            movement, detected_objects,
+                            fps, perf_monitor.get_stats(),
+                            speed, direction, cursor_controller
+                        )
+                        last_overlay_refresh_time = current_time
+                    except Exception as e:
+                        print(f"Error during overlay refresh: {str(e)}")
+                
                 # Обработка событий OpenCV
                 key = cv2.waitKey(1) & 0xFF
                 if key == 27:  # ESC
@@ -2573,17 +2839,34 @@ def main():
         traceback.print_exc()
         return 1
     finally:
+        # Очищаем все ресурсы
         print("Cleaning up resources...")
-        if 'recorder' in locals():
-            recorder.stop_recording()
-        if 'overlay' in locals():
-            try:
-                overlay.__del__()
-            except:
-                pass
+        try:
+            # Принудительно очищаем GDI объекты в OverlayWindow
+            if 'overlay' in locals():
+                print("Cleaning overlay GDI resources...")
+                overlay.clean_gdi_objects(force=True)
+        except Exception as e:
+            print(f"Error cleaning overlay resources: {str(e)}")
+            
+        try:
+            # Останавливаем запись, если она активна
+            if 'recorder' in locals() and recorder.is_recording:
+                print("Stopping recording...")
+                recorder.stop_recording()
+        except Exception as e:
+            print(f"Error stopping recording: {str(e)}")
+            
+        try:
+            # Очищаем ресурсы контроллера курсора
+            if 'cursor_controller' in locals():
+                print("Cleaning cursor controller resources...")
+                cursor_controller.cleanup()
+        except Exception as e:
+            print(f"Error cleaning cursor controller: {str(e)}")
+            
+        print("Cleanup complete, exiting...")
         cv2.destroyAllWindows()
-        cv2.waitKey(1)
-        print("Cleanup completed")
         return 0
 
 if __name__ == "__main__":
