@@ -21,6 +21,7 @@ from threading import Thread
 import torch  # Добавляем импорт PyTorch для проверки CUDA
 from ultralytics import YOLO
 from utils.training import YOLOTrainer
+import mss  # Добавляем быструю библиотеку для захвата экрана
 
 # Версия 0.029
 # - Добавлена поддержка GPU (CUDA) для ускорения инференса нейросети
@@ -1935,87 +1936,22 @@ class DrawingUtils:
             )
 
 def capture_screen():
-    """Захватывает изображение с экрана"""
-    # Статические переменные для повторного использования ресурсов
-    if not hasattr(capture_screen, "dc_resources_initialized"):
-        capture_screen.dc_resources_initialized = False
-        capture_screen.screen_width = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
-        capture_screen.screen_height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
-        capture_screen.hwindc = None
-        capture_screen.srcdc = None
-        capture_screen.memdc = None
-        capture_screen.bmp = None
-        capture_screen.failures = 0
-        capture_screen.max_failures = 5  # Максимальное число ошибок до переинициализации ресурсов
-    
-    # Инициализируем ресурсы DC один раз и переиспользуем
-    if not capture_screen.dc_resources_initialized:
-        try:
-            capture_screen.hwindc = win32gui.GetWindowDC(win32gui.GetDesktopWindow())
-            capture_screen.srcdc = win32ui.CreateDCFromHandle(capture_screen.hwindc)
-            capture_screen.memdc = capture_screen.srcdc.CreateCompatibleDC()
-            capture_screen.bmp = win32ui.CreateBitmap()
-            capture_screen.bmp.CreateCompatibleBitmap(capture_screen.srcdc, 
-                                                     capture_screen.screen_width, 
-                                                     capture_screen.screen_height)
-            capture_screen.memdc.SelectObject(capture_screen.bmp)
-            capture_screen.dc_resources_initialized = True
-            print("Screen capture resources initialized")
-        except Exception as e:
-            print(f"Error initializing screen capture resources: {str(e)}")
-            # Освобождаем частично инициализированные ресурсы
-            try:
-                if hasattr(capture_screen, "srcdc") and capture_screen.srcdc:
-                    capture_screen.srcdc.DeleteDC()
-                if hasattr(capture_screen, "memdc") and capture_screen.memdc:
-                    capture_screen.memdc.DeleteDC()
-                if hasattr(capture_screen, "hwindc") and capture_screen.hwindc:
-                    win32gui.ReleaseDC(win32gui.GetDesktopWindow(), capture_screen.hwindc)
-                if hasattr(capture_screen, "bmp") and capture_screen.bmp:
-                    win32gui.DeleteObject(capture_screen.bmp.GetHandle())
-            except:
-                pass
-            return None
+    """Захватывает изображение экрана с высокой производительностью используя MSS"""
+    # Статические переменные для повторного использования ресурсов MSS
+    if not hasattr(capture_screen, "sct"):
+        # Инициализируем MSS при первом вызове
+        capture_screen.sct = mss.mss()
+        capture_screen.monitor = capture_screen.sct.monitors[0]  # Полный экран
+        print("MSS screen capture initialized")
     
     try:
-        # Копируем изображение с экрана, используя существующие ресурсы
-        capture_screen.memdc.BitBlt((0, 0), 
-                                   (capture_screen.screen_width, capture_screen.screen_height), 
-                                   capture_screen.srcdc, 
-                                   (0, 0), 
-                                   win32con.SRCCOPY)
+        # Захватываем изображение с экрана с помощью MSS (намного быстрее Win32API и PyAutoGUI)
+        img = np.asarray(capture_screen.sct.grab(capture_screen.monitor))
         
-        # Конвертируем в numpy array
-        signedIntsArray = capture_screen.bmp.GetBitmapBits(True)
-        img = np.frombuffer(signedIntsArray, dtype='uint8')
-        img.shape = (capture_screen.screen_height, capture_screen.screen_width, 4)
-        
-        # Конвертируем в BGR для OpenCV
-        capture_screen.failures = 0  # Сбрасываем счетчик ошибок при успехе
+        # Конвертируем из BGR в RGB для OpenCV
         return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
     except Exception as e:
-        print(f"Error in screen capture: {str(e)}")
-        capture_screen.failures += 1
-        
-        # Если превышено максимальное число ошибок, переинициализируем ресурсы
-        if capture_screen.failures >= capture_screen.max_failures:
-            print("Too many screen capture failures, reinitializing resources...")
-            capture_screen.dc_resources_initialized = False
-            try:
-                if hasattr(capture_screen, "srcdc") and capture_screen.srcdc:
-                    capture_screen.srcdc.DeleteDC()
-                if hasattr(capture_screen, "memdc") and capture_screen.memdc:
-                    capture_screen.memdc.DeleteDC()
-                if hasattr(capture_screen, "hwindc") and capture_screen.hwindc:
-                    win32gui.ReleaseDC(win32gui.GetDesktopWindow(), capture_screen.hwindc)
-                if hasattr(capture_screen, "bmp") and capture_screen.bmp:
-                    win32gui.DeleteObject(capture_screen.bmp.GetHandle())
-            except:
-                pass
-            
-            # Небольшая задержка перед повторной инициализацией
-            time.sleep(0.1)
-        
+        print(f"Error in MSS screen capture: {str(e)}")
         return None
 
 class YOLOPersonDetector:
@@ -2681,10 +2617,6 @@ def main():
         overlay = OverlayWindow()
         print("OverlayWindow initialized")
         
-        print("Initializing VideoRecorder...")
-        recorder = VideoRecorder()
-        print("VideoRecorder initialized")
-        
         print("Initializing PerformanceMonitor...")
         perf_monitor = PerformanceMonitor()
         print("PerformanceMonitor initialized")
@@ -2714,7 +2646,6 @@ def main():
         print("Press 'Backspace' to toggle attack mode")
         print("Press '\\' to toggle ignoring people (class 0)")
         print("Press 'F1' to exit")
-        print("Press '.' to start/stop recording")
         print("Press 'F6' to start/stop training data collection for bags")
         print("Press 'F7' to start fine-tuning the model with collected data")
         
@@ -2735,13 +2666,6 @@ def main():
                 if keyboard.is_pressed('F1'):
                     print("F1 pressed, exiting...")
                     break
-                elif keyboard.is_pressed('.'):
-                    if not recorder.is_recording:
-                        print("Starting recording...")
-                        recorder.start_recording(frame)
-                    else:
-                        print("Stopping recording...")
-                        recorder.stop_recording()
                 elif keyboard.is_pressed('-'):
                     if cursor_controller.toggle_mode():
                         print("Toggled mouse mode")
@@ -2839,14 +2763,6 @@ def main():
                     for name, counter in stats.items():
                         print(f"{name}: {counter.current_time*1000:.1f}ms (avg: {counter.avg_time*1000:.1f}ms)")
                     last_stats_time = current_time
-                
-                # Запись кадра если идет запись
-                if recorder.is_recording and frame is not None:
-                    try:
-                        recorder.write_frame(frame)
-                    except Exception as e:
-                        print(f"Error writing frame: {str(e)}")
-                        recorder.stop_recording()
                 
                 # Периодическая очистка GDI объектов для предотвращения утечек
                 if current_time - last_gdi_clean_time >= gdi_clean_interval:
