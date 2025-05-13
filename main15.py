@@ -22,7 +22,11 @@ import torch  # Добавляем импорт PyTorch для проверки 
 from ultralytics import YOLO
 from utils.training import YOLOTrainer
 
-# Версия 0.028
+# Версия 0.029
+# - Добавлена поддержка GPU (CUDA) для ускорения инференса нейросети
+# - Оптимизирован захват экрана для снижения нагрузки на систему
+# - Добавлено кеширование результатов детекции для уменьшения частоты вызовов инференса
+# - Уменьшена частота полного анализа кадров до 10 Гц для экономии ресурсов
 # - Исправлены ошибки, приводящие к исчезновению оверлея при длительной работе программы
 # - Добавлена периодическая очистка GDI объектов для предотвращения утечек ресурсов Windows
 # - Исправлен метод UpdateLayeredWindow для корректной работы прозрачного оверлея
@@ -39,7 +43,6 @@ from utils.training import YOLOTrainer
 # - Добавлено название "Reign of Bots" и версия в заголовке
 # - Исправлены утечки ресурсов GDI, улучшена работа прозрачного окна
 # - Оптимизирована производительность отрисовки интерфейса
-# - Добавлена автоматическая поддержка CUDA для ускорения инференса
 
 # Словарь имен классов COCO для YOLO11
 COCO_CLASSES = {
@@ -964,7 +967,7 @@ class OverlayWindow:
             
             # Добавляем название программы и версию в центре верхней части экрана
             title_text = "Reign of Bots"
-            version_text = "v0.028"
+            version_text = "v0.029"
             
             # Используем Arial italic для заголовка, красный цвет, увеличиваем размер шрифта
             title_font = self.create_font({
@@ -1933,70 +1936,87 @@ class DrawingUtils:
 
 def capture_screen():
     """Захватывает изображение с экрана"""
-    # Получаем размеры экрана
-    screen_width = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
-    screen_height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
+    # Статические переменные для повторного использования ресурсов
+    if not hasattr(capture_screen, "dc_resources_initialized"):
+        capture_screen.dc_resources_initialized = False
+        capture_screen.screen_width = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
+        capture_screen.screen_height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
+        capture_screen.hwindc = None
+        capture_screen.srcdc = None
+        capture_screen.memdc = None
+        capture_screen.bmp = None
+        capture_screen.failures = 0
+        capture_screen.max_failures = 5  # Максимальное число ошибок до переинициализации ресурсов
     
-    # Создаем DC для экрана
-    hwindc = None
-    srcdc = None
-    memdc = None
-    bmp = None
+    # Инициализируем ресурсы DC один раз и переиспользуем
+    if not capture_screen.dc_resources_initialized:
+        try:
+            capture_screen.hwindc = win32gui.GetWindowDC(win32gui.GetDesktopWindow())
+            capture_screen.srcdc = win32ui.CreateDCFromHandle(capture_screen.hwindc)
+            capture_screen.memdc = capture_screen.srcdc.CreateCompatibleDC()
+            capture_screen.bmp = win32ui.CreateBitmap()
+            capture_screen.bmp.CreateCompatibleBitmap(capture_screen.srcdc, 
+                                                     capture_screen.screen_width, 
+                                                     capture_screen.screen_height)
+            capture_screen.memdc.SelectObject(capture_screen.bmp)
+            capture_screen.dc_resources_initialized = True
+            print("Screen capture resources initialized")
+        except Exception as e:
+            print(f"Error initializing screen capture resources: {str(e)}")
+            # Освобождаем частично инициализированные ресурсы
+            try:
+                if hasattr(capture_screen, "srcdc") and capture_screen.srcdc:
+                    capture_screen.srcdc.DeleteDC()
+                if hasattr(capture_screen, "memdc") and capture_screen.memdc:
+                    capture_screen.memdc.DeleteDC()
+                if hasattr(capture_screen, "hwindc") and capture_screen.hwindc:
+                    win32gui.ReleaseDC(win32gui.GetDesktopWindow(), capture_screen.hwindc)
+                if hasattr(capture_screen, "bmp") and capture_screen.bmp:
+                    win32gui.DeleteObject(capture_screen.bmp.GetHandle())
+            except:
+                pass
+            return None
     
     try:
-        # Пробуем получить DC с несколькими попытками
-        max_attempts = 3
-        for attempt in range(max_attempts):
-            try:
-                hwindc = win32gui.GetWindowDC(win32gui.GetDesktopWindow())
-                if hwindc:
-                    srcdc = win32ui.CreateDCFromHandle(hwindc)
-                    if srcdc:
-                        memdc = srcdc.CreateCompatibleDC()
-                        bmp = win32ui.CreateBitmap()
-                        bmp.CreateCompatibleBitmap(srcdc, screen_width, screen_height)
-                        memdc.SelectObject(bmp)
-                        break
-            except Exception as e:
-                if attempt < max_attempts - 1:
-                    print(f"Attempt {attempt+1} failed: {str(e)}. Retrying...")
-                    time.sleep(0.1)  # Небольшая пауза перед следующей попыткой
-                else:
-                    print(f"All {max_attempts} attempts to create DC failed: {str(e)}")
-                    raise
-        
-        if not hwindc or not srcdc or not memdc or not bmp:
-            print("Failed to initialize screen capture resources")
-            return None
-        
-        # Копируем изображение с экрана
-        memdc.BitBlt((0, 0), (screen_width, screen_height), srcdc, (0, 0), win32con.SRCCOPY)
+        # Копируем изображение с экрана, используя существующие ресурсы
+        capture_screen.memdc.BitBlt((0, 0), 
+                                   (capture_screen.screen_width, capture_screen.screen_height), 
+                                   capture_screen.srcdc, 
+                                   (0, 0), 
+                                   win32con.SRCCOPY)
         
         # Конвертируем в numpy array
-        signedIntsArray = bmp.GetBitmapBits(True)
+        signedIntsArray = capture_screen.bmp.GetBitmapBits(True)
         img = np.frombuffer(signedIntsArray, dtype='uint8')
-        img.shape = (screen_height, screen_width, 4)
+        img.shape = (capture_screen.screen_height, capture_screen.screen_width, 4)
         
         # Конвертируем в BGR для OpenCV
+        capture_screen.failures = 0  # Сбрасываем счетчик ошибок при успехе
         return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
     except Exception as e:
         print(f"Error in screen capture: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        capture_screen.failures += 1
+        
+        # Если превышено максимальное число ошибок, переинициализируем ресурсы
+        if capture_screen.failures >= capture_screen.max_failures:
+            print("Too many screen capture failures, reinitializing resources...")
+            capture_screen.dc_resources_initialized = False
+            try:
+                if hasattr(capture_screen, "srcdc") and capture_screen.srcdc:
+                    capture_screen.srcdc.DeleteDC()
+                if hasattr(capture_screen, "memdc") and capture_screen.memdc:
+                    capture_screen.memdc.DeleteDC()
+                if hasattr(capture_screen, "hwindc") and capture_screen.hwindc:
+                    win32gui.ReleaseDC(win32gui.GetDesktopWindow(), capture_screen.hwindc)
+                if hasattr(capture_screen, "bmp") and capture_screen.bmp:
+                    win32gui.DeleteObject(capture_screen.bmp.GetHandle())
+            except:
+                pass
+            
+            # Небольшая задержка перед повторной инициализацией
+            time.sleep(0.1)
+        
         return None
-    finally:
-        # Освобождаем ресурсы
-        try:
-            if srcdc:
-                srcdc.DeleteDC()
-            if memdc:
-                memdc.DeleteDC()
-            if hwindc:
-                win32gui.ReleaseDC(win32gui.GetDesktopWindow(), hwindc)
-            if bmp:
-                win32gui.DeleteObject(bmp.GetHandle())
-        except Exception as e:
-            print(f"Error cleaning up screen capture resources: {str(e)}")
 
 class YOLOPersonDetector:
     """Класс для обнаружения людей с помощью YOLOv8"""
@@ -2049,12 +2069,20 @@ class YOLOPersonDetector:
             import time
             start_time = time.time()
             
-            # Всегда используем CPU для предотвращения ошибки с torchvision::nms на CUDA
-            results = self.model(resized_frame, conf=self.conf, classes=0, device="cpu")  # class 0 = person
+            # Используем CUDA, если доступно
+            device = self.device if self.cuda_available else "cpu"
+            
+            try:
+                # Пробуем использовать CUDA
+                results = self.model(resized_frame, conf=self.conf, classes=0, device=device)  # class 0 = person
+            except Exception as cuda_error:
+                print(f"Error using {device} for detection, falling back to CPU: {str(cuda_error)}")
+                # Если произошла ошибка с CUDA, используем CPU
+                results = self.model(resized_frame, conf=self.conf, classes=0, device="cpu")
             
             # Рассчитываем время работы
             inference_time = (time.time() - start_time) * 1000  # в мс
-            print(f"Detection time: {inference_time:.2f}ms on CPU (forced)")
+            print(f"Detection time: {inference_time:.2f}ms on {device}")
             
             self.last_results = results
             self.last_frame = frame
@@ -2085,12 +2113,20 @@ class YOLOPersonDetector:
             import time
             start_time = time.time()
             
-            # Всегда используем CPU для предотвращения ошибки с torchvision::nms на CUDA
-            results = self.model(resized_frame, conf=self.conf, device="cpu", verbose=False)
+            # Используем CUDA, если доступно
+            device = self.device if self.cuda_available else "cpu"
+            
+            try:
+                # Пробуем использовать CUDA
+                results = self.model(resized_frame, conf=self.conf, device=device, verbose=False)
+            except Exception as cuda_error:
+                print(f"Error using {device} for detection, falling back to CPU: {str(cuda_error)}")
+                # Если произошла ошибка с CUDA, используем CPU
+                results = self.model(resized_frame, conf=self.conf, device="cpu", verbose=False)
             
             # Рассчитываем время работы
             inference_time = (time.time() - start_time) * 1000  # в мс
-            print(f"All objects detection time: {inference_time:.2f}ms on CPU (forced)")
+            print(f"All objects detection time: {inference_time:.2f}ms on {device}")
             
             self.last_results = results
             self.last_frame = frame
@@ -2276,8 +2312,24 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
         if not hasattr(process_frame, "detector"):
             process_frame.detector = YOLOPersonDetector(model=yolo_model, conf=0.4)
         
-        # Запускаем детекцию всех объектов, а не только людей
-        results = process_frame.detector.detect_all_objects(frame)
+        # Хранение времени последнего полного анализа
+        if not hasattr(process_frame, "last_full_detection_time"):
+            process_frame.last_full_detection_time = 0
+            process_frame.detection_interval = 0.1  # 10 раз в секунду
+            process_frame.cached_results = None
+        
+        current_time = time.time()
+        
+        # Уменьшаем частоту инференса для снижения нагрузки
+        # Делаем полный анализ только раз в 100 мс (10 Гц), а в остальное время используем кеш
+        if current_time - process_frame.last_full_detection_time >= process_frame.detection_interval:
+            # Запускаем детекцию всех объектов, а не только людей
+            results = process_frame.detector.detect_all_objects(frame)
+            process_frame.cached_results = results
+            process_frame.last_full_detection_time = current_time
+        else:
+            # Используем кешированные результаты
+            results = process_frame.cached_results
         
         # Получаем все объекты
         all_objects = process_frame.detector.get_all_objects(results)
