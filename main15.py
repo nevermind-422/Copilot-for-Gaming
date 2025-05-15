@@ -308,8 +308,7 @@ class OverlayWindow:
         self.last_update_time = time.time()
         self.update_interval = 1.0 / 30.0  # 30 FPS
         
-        # Флаг для отрисовки скелета
-        self.draw_skeleton_enabled = False
+                # Удален флаг для отрисовки скелета, так как функционал не используется
         
         # Флаг для отрисовки рамок объектов
         self.draw_bounding_boxes = SHOW_BOUNDING_BOXES
@@ -468,10 +467,6 @@ class OverlayWindow:
         """
         Очищает все созданные GDI объекты для предотвращения утечек памяти
         
-        GDI объекты (перья, кисти, шрифты) - это ограниченный системный ресурс.
-        Windows имеет ограничение на количество GDI объектов (10,000 на сессию),
-        поэтому необходимо освобождать их после использования.
-        
         Args:
             force (bool): Если True, то очистка будет выполнена немедленно,
                           вне зависимости от времени последней очистки кэша.
@@ -511,9 +506,7 @@ class OverlayWindow:
             if not any(err in str(e) for err in ["invalid handle", "already deleted", "cannot delete"]):
                 print(f"Error in clean_gdi_objects: {str(e)}")
 
-    def draw_skeleton(self, landmarks, color):
-        """Не используется в YOLO, оставлено для совместимости"""
-        pass
+        # Удалена функция draw_skeleton, так как она не используется с YOLO
 
     def draw_movement_vector(self, cursor_pos, target_pos, speed, direction):
         """Рисует вектор движения с градиентом скорости"""
@@ -650,9 +643,7 @@ class OverlayWindow:
             import traceback
             traceback.print_exc()
 
-    def draw_landmark_labels(self, landmarks):
-        """Не используется в YOLO, оставлено для совместимости"""
-        pass
+        # Удалена функция draw_landmark_labels, так как она не используется с YOLO
 
     def draw_crosshair(self, cursor_controller):
         """Рисует прицел в зависимости от режима"""
@@ -1311,11 +1302,8 @@ class OverlayWindow:
             if detected_objects and self.draw_bounding_boxes:
                 for obj in detected_objects:
                     try:
-                        if obj['type'] == 'body':
-                            if self.draw_skeleton_enabled:
-                                self.draw_skeleton(obj['landmarks'], obj['color'])
-                            if 'box' in obj:
-                                self.draw_bounding_box(obj['box'], obj['color'], obj.get('class', None), obj.get('distance', None))
+                        if obj['type'] == 'body' and 'box' in obj:
+                            self.draw_bounding_box(obj['box'], obj['color'], obj.get('class', None), obj.get('distance', None))
                         elif obj['type'] == 'object':
                             if 'box' in obj:
                                 # Добавляем метку над боксом с информацией о классе и расстоянии
@@ -1637,14 +1625,7 @@ class CursorController:
         self.smoothed_max_x = None
         self.smoothed_max_y = None
     
-    def calculate_3d_position(self, landmarks, screen_width, screen_height):
-        """
-        УСТАРЕВШИЙ МЕТОД. Используйте YOLOPersonDetector.calculate_3d_position вместо него.
-        Оставлен для обратной совместимости.
-        """
-        print("Warning: Calling deprecated method CursorController.calculate_3d_position")
-        # Возвращаем пустые значения
-        return None, None, None, 0.0, 0.0
+        # Удален устаревший метод calculate_3d_position, который был заменен на YOLOPersonDetector.calculate_3d_position
 
     def toggle_following(self):
         """Переключает режим следования за целью"""
@@ -2008,71 +1989,11 @@ class CursorController:
     def __del__(self):
         self.cleanup()
 
-class VideoRecorder:
-    def __init__(self):
-        self.is_recording = False
-        self.video_writer = None
-        self.record_start_time = None
-        self.last_frame_time = None
-        self.frame_interval = 1.0 / 30.0  # 30 FPS
-        self.frame_count = 0
-        
-    def start_recording(self, frame):
-        if self.is_recording:
-            self.stop_recording()
-            return
-            
-        # Создаем папку для записей, если её нет
-        if not os.path.exists('recordings'):
-            os.makedirs('recordings')
-        
-        # Генерируем имя файла с текущей датой и временем
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"recordings/screen_recording_{timestamp}.mp4"
-        
-        # Получаем размеры кадра
-        height, width = frame.shape[:2]
-        
-        # Создаем VideoWriter с кодеком H.264
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        fps = 30  # Стандартный FPS
-        self.video_writer = cv2.VideoWriter(filename, fourcc, fps, (width, height))
-        self.is_recording = True
-        self.record_start_time = time.time()
-        self.last_frame_time = time.time()
-        self.frame_count = 0
-        print(f"Started recording to {filename}")
-            
-    def stop_recording(self):
-        if self.is_recording:
-            self.is_recording = False
-            if self.video_writer is not None:
-                self.video_writer.release()
-                self.video_writer = None
-                duration = time.time() - self.record_start_time
-                print(f"Stopped recording. Duration: {duration:.1f} seconds")
-                print(f"Recorded {self.frame_count} frames")
-                
-    def write_frame(self, frame):
-        if self.is_recording and self.video_writer is not None:
-            try:
-                self.video_writer.write(frame)
-                self.frame_count += 1
-            except Exception as e:
-                print(f"Error writing frame: {e}")
-                self.stop_recording()
-                    
-    def __del__(self):
-        self.stop_recording()
+# Удален класс VideoRecorder, так как он не используется в коде
 
-class DrawingUtils:
-    # Словарь с названиями частей тела (не используется с YOLO)
-    BODY_PARTS = {}
+class DrawingUtils:    # Удален словарь BODY_PARTS, так как он не используется с YOLO
 
-    @staticmethod
-    def draw_landmarks(frame, landmarks, connections, color, thickness=2, circle_radius=4):
-        """Эта функция не используется с YOLO, оставлена для совместимости"""
-        pass
+        # Удален метод draw_landmarks, так как он не используется с YOLO
 
     @staticmethod
     def draw_bounding_box(frame, box, color, padding=10, thickness=2):
@@ -3198,13 +3119,7 @@ def main():
         except Exception as e:
             print(f"Error cleaning overlay resources: {str(e)}")
             
-        try:
-            # Останавливаем запись, если она активна
-            if 'recorder' in locals() and recorder.is_recording:
-                print("Stopping recording...")
-                recorder.stop_recording()
-        except Exception as e:
-            print(f"Error stopping recording: {str(e)}")
+                # Удалено: блок с recorder, так как VideoRecorder больше не используется
             
         try:
             # Очищаем ресурсы контроллера курсора
