@@ -942,69 +942,103 @@ class OverlayWindow:
             print(f"Error drawing person ignore status: {str(e)}")
 
     def draw_cursor_control_status(self, cursor_controller):
-        """Рисует индикатор режима управления мышью в виде кнопки"""
         try:
-            # Создаем список для отслеживания GDI объектов
-            gdi_objects = []
+            # Позиция и размеры индикатора
+            btn_width = 220
+            btn_height = 40
+            btn_x = 470  # Немного левее индикатора боя
+            btn_y = 300  # Под индикатором игнорирования Person
             
-            # Позиция и размеры кнопки - та же ширина, что и у других кнопок
-            button_width = 120
-            button_height = 40
-            button_x = 460  # Смещаем левее с 600 до 460
-            button_y = 290  # Располагаем под кнопкой игнорирования людей
+            # Определяем цвета
+            active_color = 0x00FF00  # Зеленый для активного состояния
+            inactive_color = 0xFF0000  # Красный для неактивного состояния
             
-            # Цвета
-            bg_color = 0x00FF00 if cursor_controller.cursor_control_enabled else 0xFF0000  # Зеленый для активного, красный для неактивного
+            # Цвет текста
             text_color = 0xFFFFFF  # Белый текст
             
+            # Текст кнопки
+            btn_text = f"Mouse Control: {cursor_controller.cursor_control_enabled and 'ON' or 'OFF'}"
+            
+            # Цвет фона в зависимости от состояния
+            bg_color = cursor_controller.cursor_control_enabled and active_color or inactive_color
+            
             # Рисуем фон кнопки
-            brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
-            gdi_objects.append(('brush', brush))
-            self.save_dc.SelectObject(brush)
-            self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
+            self.save_dc.FillSolidRect((btn_x, btn_y, btn_x + btn_width, btn_y + btn_height), bg_color)
             
-            # Рисуем рамку кнопки
-            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0xFFFFFF)  # Белая рамка
-            gdi_objects.append(('pen', pen))
+            # Рисуем рамку вокруг кнопки
+            pen = self.create_pen(win32con.PS_SOLID, 2, 0xFFFFFF)  # Белая рамка
             self.save_dc.SelectObject(pen)
-            self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
+            self.save_dc.Rectangle((btn_x, btn_y, btn_x + btn_width, btn_y + btn_height))
             
-            # Рисуем текст
+            # Рисуем текст кнопки
             self.save_dc.SetTextColor(text_color)
-            status = "MOUSE: ON" if cursor_controller.cursor_control_enabled else "MOUSE: OFF"
             
-            # Центрируем текст
-            text_width = self.save_dc.GetTextExtent(status)[0]
-            text_x = button_x + (button_width - text_width) // 2
-            text_y = button_y + (button_height - 20) // 2
+            # Вычисляем позицию для центрирования текста
+            text_width = self.save_dc.GetTextExtent(btn_text)[0]
+            text_x = btn_x + (btn_width - text_width) // 2
+            text_y = btn_y + (btn_height - 20) // 2  # 20 - примерная высота текста
             
-            self.save_dc.TextOut(text_x, text_y, status)
+            self.save_dc.TextOut(text_x, text_y, btn_text)
             
-            # Добавляем подсказку с хоткеем справа от кнопки
-            hotkey_text = ": F5"
-            self.save_dc.SetTextColor(0x00FF00)  # Зеленый цвет для подсказки
-            hotkey_x = button_x + button_width + 10
-            self.save_dc.TextOut(hotkey_x, button_y + (button_height - 20) // 2, hotkey_text)
+            # Добавляем горячую клавишу
+            hotkey_text = "[M]"
+            hotkey_width = self.save_dc.GetTextExtent(hotkey_text)[0]
+            self.save_dc.TextOut(btn_x + btn_width - hotkey_width - 5, btn_y + btn_height + 5, hotkey_text)
             
-            # Очищаем ресурсы
-            for obj_type, obj in gdi_objects:
-                try:
-                    if obj_type == 'brush':
-                        if hasattr(obj, 'DeleteObject'):
-                            obj.DeleteObject()
-                        elif hasattr(obj, 'delete'):
-                            obj.delete()
-                    elif obj_type == 'pen':
-                        if hasattr(obj, 'DeleteObject'):
-                            obj.DeleteObject()
-                        elif hasattr(obj, 'delete'):
-                            obj.delete()
-                except Exception as e:
-                    print(f"Error cleaning up GDI object ({obj_type}): {str(e)}")
-            
+            return True
         except Exception as e:
             print(f"Error drawing cursor control status: {str(e)}")
+            return False
 
+    def draw_boxes_status(self):
+        try:
+            # Позиция и размеры индикатора
+            btn_width = 220
+            btn_height = 40
+            btn_x = 470  # Сохраняем позицию как у других индикаторов
+            btn_y = 350  # Под индикатором управления мышью
+            
+            # Определяем цвета
+            active_color = 0x00FF00  # Зеленый для активного состояния
+            inactive_color = 0xFF0000  # Красный для неактивного состояния
+            
+            # Цвет текста
+            text_color = 0xFFFFFF  # Белый текст
+            
+            # Текст кнопки
+            btn_text = f"Bounding Boxes: {self.draw_bounding_boxes and 'ON' or 'OFF'}"
+            
+            # Цвет фона в зависимости от состояния
+            bg_color = self.draw_bounding_boxes and active_color or inactive_color
+            
+            # Рисуем фон кнопки
+            self.save_dc.FillSolidRect((btn_x, btn_y, btn_x + btn_width, btn_y + btn_height), bg_color)
+            
+            # Рисуем рамку вокруг кнопки
+            pen = self.create_pen(win32con.PS_SOLID, 2, 0xFFFFFF)  # Белая рамка
+            self.save_dc.SelectObject(pen)
+            self.save_dc.Rectangle((btn_x, btn_y, btn_x + btn_width, btn_y + btn_height))
+            
+            # Рисуем текст кнопки
+            self.save_dc.SetTextColor(text_color)
+            
+            # Вычисляем позицию для центрирования текста
+            text_width = self.save_dc.GetTextExtent(btn_text)[0]
+            text_x = btn_x + (btn_width - text_width) // 2
+            text_y = btn_y + (btn_height - 20) // 2  # 20 - примерная высота текста
+            
+            self.save_dc.TextOut(text_x, text_y, btn_text)
+            
+            # Добавляем горячую клавишу
+            hotkey_text = "[F4]"
+            hotkey_width = self.save_dc.GetTextExtent(hotkey_text)[0]
+            self.save_dc.TextOut(btn_x + btn_width - hotkey_width - 5, btn_y + btn_height + 5, hotkey_text)
+            
+            return True
+        except Exception as e:
+            print(f"Error drawing boxes status: {str(e)}")
+            return False
+            
     def draw_ignored_classes(self, cursor_controller):
         try:
             # Создаем список для отслеживания GDI объектов
@@ -1247,7 +1281,7 @@ class OverlayWindow:
                 except Exception as e:
                     print(f"Error drawing movement status: {str(e)}")
             
-            if detected_objects:
+            if detected_objects and self.draw_bounding_boxes:
                 for obj in detected_objects:
                     try:
                         if obj['type'] == 'body':
@@ -2696,51 +2730,47 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
             cursor_x, cursor_y = cursor_controller.move_cursor(target_x, target_y)
             perf_monitor.stop('cursor')
             
-            # Рисуем рамки объектов в окне отладки только если включено
+            # Рисуем рамки объектов в окне отладки
             perf_monitor.start('drawing')
             
-            # Рисуем все обнаруженные объекты если включено отображение рамок
-            if overlay.draw_bounding_boxes:
-                for obj in detected_objects:
-                    try:
-                        box = obj['box']
-                        color = obj['color']
-                        
-                        # Преобразуем цвет из BGR в RGB
-                        display_color = (color[2], color[1], color[0])
-                        
-                        # Рисуем рамку
-                        cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 2)
-                        
-                        # Рисуем информацию о классе и расстоянии
-                        class_name = obj['class']
-                        distance = obj['distance']
-                        text = f"{class_name}: {distance:.2f}m"
-                        
-                        # Добавляем текст о выбранной цели
-                        if obj.get('is_target', False) and not training_active:
-                            text += " [TARGET]"
-                            # Рисуем более толстую рамку для целевого объекта
-                            cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 4)
-                        
-                        # Размещаем текст над рамкой
-                        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
-                        text_x = box[0]
-                        text_y = box[1] - 10 if box[1] > 30 else box[1] + 30
-                        cv2.rectangle(frame, (text_x, text_y - text_size[1] - 10), 
-                                    (text_x + text_size[0] + 10, text_y), display_color, -1)
-                        cv2.putText(frame, text, (text_x + 5, text_y - 5), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                    except Exception as e:
-                        # Подавляем частые ошибки отрисовки
-                        if not any(err in str(e) for err in ["invalid handle", "GetDIBits", "index out of range"]):
-                            print(f"Error drawing object: {e}")
+            # Всегда рисуем рамки в отладочном окне независимо от настроек оверлея
+            for obj in detected_objects:
+                try:
+                    box = obj['box']
+                    color = obj['color']
+                    
+                    # Преобразуем цвет из BGR в RGB
+                    display_color = (color[2], color[1], color[0])
+                    
+                    # Рисуем рамку
+                    cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 2)
+                    
+                    # Рисуем информацию о классе и расстоянии
+                    class_name = obj['class']
+                    distance = obj['distance']
+                    text = f"{class_name}: {distance:.2f}m"
+                    
+                    # Добавляем текст о выбранной цели
+                    if obj.get('is_target', False) and not training_active:
+                        text += " [TARGET]"
+                        # Рисуем более толстую рамку для целевого объекта
+                        cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 4)
+                    
+                    # Размещаем текст над рамкой
+                    text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+                    text_x = box[0]
+                    text_y = box[1] - 10 if box[1] > 30 else box[1] + 30
+                    cv2.rectangle(frame, (text_x, text_y - text_size[1] - 10), 
+                                  (text_x + text_size[0] + 10, text_y), display_color, -1)
+                    cv2.putText(frame, text, (text_x + 5, text_y - 5), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                except Exception as e:
+                    # Подавляем частые ошибки отрисовки
+                    if not any(err in str(e) for err in ["invalid handle", "GetDIBits", "index out of range"]):
+                        print(f"Error drawing object: {e}")
             
-            # Всегда рисуем курсор
-            cv2.circle(frame, (cursor_x, cursor_y), 5, (0, 0, 255), -1)
-            
-            # Рисуем вектор движения если включено отображение рамок
-            if overlay.draw_bounding_boxes and cursor_controller.last_position is not None:
+            # Рисуем вектор движения всегда, независимо от настроек оверлея
+            if cursor_controller.last_position is not None:
                 dx = target_x - cursor_controller.last_position[0]
                 dy = target_y - cursor_controller.last_position[1]
                 movement = (dx**2 + dy**2)**0.5
@@ -2754,39 +2784,49 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                         2,
                         tipLength=0.2
                     )
+            
+            # Всегда рисуем курсор для отладочного отображения
+            cv2.circle(frame, (cursor_x, cursor_y), 5, (0, 0, 255), -1)
+            
             perf_monitor.stop('drawing')
         else:
-            # В режиме обучения или если нет цели, рисуем все объекты если включено отображение рамок
+            # В режиме обучения или если нет цели, рисуем все объекты только если включено отображение рамок
             perf_monitor.start('drawing')
-            if overlay.draw_bounding_boxes:
-                for obj in detected_objects:
-                    try:
-                        box = obj['box']
-                        color = obj['color']
-                        
-                        # Преобразуем цвет из BGR в RGB
-                        display_color = (color[2], color[1], color[0])
-                        
-                        # Рисуем рамку
-                        cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 2)
-                        
-                        # Рисуем информацию о классе и расстоянии
-                        class_name = obj['class']
-                        distance = obj['distance']
-                        text = f"{class_name}: {distance:.2f}m"
-                        
-                        # Размещаем текст над рамкой
-                        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
-                        text_x = box[0]
-                        text_y = box[1] - 10 if box[1] > 30 else box[1] + 30
-                        cv2.rectangle(frame, (text_x, text_y - text_size[1] - 10), 
-                                    (text_x + text_size[0] + 10, text_y), display_color, -1)
-                        cv2.putText(frame, text, (text_x + 5, text_y - 5), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                    except Exception as e:
-                        # Подавляем частые ошибки отрисовки
-                        if not any(err in str(e) for err in ["invalid handle", "GetDIBits", "index out of range"]):
-                            print(f"Error drawing object: {e}")
+            
+            # Всегда рисуем все объекты в отладочном окне независимо от настроек оверлея
+            for obj in detected_objects:
+                try:
+                    box = obj['box']
+                    color = obj['color']
+                    
+                    # Преобразуем цвет из BGR в RGB
+                    display_color = (color[2], color[1], color[0])
+                    
+                    # Рисуем рамку
+                    cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 2)
+                    
+                    # Рисуем информацию о классе и расстоянии
+                    class_name = obj['class']
+                    distance = obj['distance']
+                    text = f"{class_name}: {distance:.2f}m"
+                    
+                    # Размещаем текст над рамкой
+                    text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+                    text_x = box[0]
+                    text_y = box[1] - 10 if box[1] > 30 else box[1] + 30
+                    cv2.rectangle(frame, (text_x, text_y - text_size[1] - 10), 
+                                (text_x + text_size[0] + 10, text_y), display_color, -1)
+                    cv2.putText(frame, text, (text_x + 5, text_y - 5), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                except Exception as e:
+                    # Подавляем частые ошибки отрисовки
+                    if not any(err in str(e) for err in ["invalid handle", "GetDIBits", "index out of range"]):
+                        print(f"Error drawing object: {e}")
+            
+            # Всегда рисуем курсор для отладочного отображения
+            if target_x is not None and target_y is not None:
+                cv2.circle(frame, (target_x, target_y), 5, (0, 0, 255), -1)
+            
             perf_monitor.stop('drawing')
             
             # Используем текущую позицию курсора для отображения
@@ -2981,6 +3021,7 @@ def main():
                     overlay.draw_bounding_boxes = not overlay.draw_bounding_boxes
                     status = "VISIBLE" if overlay.draw_bounding_boxes else "HIDDEN"
                     print(f"Bounding boxes are now {status}")
+                    print(f"Debug: overlay.draw_bounding_boxes = {overlay.draw_bounding_boxes}")
                     time.sleep(0.1)
                 elif keyboard.is_pressed('backspace'):
                     if cursor_controller.toggle_attack():
