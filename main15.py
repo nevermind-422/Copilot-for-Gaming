@@ -2681,11 +2681,10 @@ def draw_objects(frame, detected_objects, target_x, target_y, cursor_controller,
                 box = obj['box']
                 color = obj['color']
                 
-                # Преобразуем цвет из BGR в RGB
-                display_color = (color[2], color[1], color[0])
+                # Используем оригинальный цвет BGR для OpenCV без преобразования
                 
                 # Рисуем рамку
-                cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 2)
+                cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), color, 2)
                 
                 # Рисуем информацию о классе и расстоянии
                 class_name = obj['class']
@@ -2696,14 +2695,13 @@ def draw_objects(frame, detected_objects, target_x, target_y, cursor_controller,
                 if obj.get('is_target', False) and not training_active:
                     text += " [TARGET]"
                     # Рисуем более толстую рамку для целевого объекта
-                    cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 4)
+                    cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), color_to_use, 4)
                 
                 # Размещаем текст над рамкой
                 text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
                 text_x = box[0]
                 text_y = box[1] - 10 if box[1] > 30 else box[1] + 30
-                cv2.rectangle(frame, (text_x, text_y - text_size[1] - 10), 
-                              (text_x + text_size[0] + 10, text_y), display_color, -1)
+                cv2.rectangle(frame, (text_x, text_y - text_size[1] - 10),                              (text_x + text_size[0] + 10, text_y), color, -1)
                 cv2.putText(frame, text, (text_x + 5, text_y - 5), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             except Exception as e:
