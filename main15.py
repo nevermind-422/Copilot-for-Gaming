@@ -23,6 +23,10 @@ from ultralytics import YOLO
 from utils.training import YOLOTrainer
 import mss  # Добавляем быструю библиотеку для захвата экрана
 
+# Версия 0.031
+# - Добавлена возможность скрытия/отображения рамок объектов с помощью клавиши F4
+# - Программа теперь запускается с отключенными рамками объектов по умолчанию
+# - Добавлен аргумент командной строки --show-boxes для запуска с включенными рамками
 # Версия 0.030
 # - Улучшена стабильность работы MSS для захвата экрана
 # - Подавлен вывод распространенных ошибок GetDIBits для более чистого лога
@@ -95,12 +99,21 @@ parser.add_argument('--no-cursor-control', action='store_true',
                     help='Disable cursor control features to avoid errors')
 parser.add_argument('--no-cuda', action='store_true',
                     help='Disable CUDA acceleration even if available')
+parser.add_argument('--show-boxes', action='store_true',
+                    help='Start with bounding boxes visible (default: hidden)')
 args = parser.parse_args()
 
 # Отключение управления курсором
 DISABLE_CURSOR_CONTROL = args.no_cursor_control
 if DISABLE_CURSOR_CONTROL:
     print("Cursor control is disabled. The program will not move the cursor.")
+    
+# Настройка отображения рамок
+SHOW_BOUNDING_BOXES = args.show_boxes
+if not SHOW_BOUNDING_BOXES:
+    print("Bounding boxes are hidden by default. Press F4 to toggle visibility.")
+else:
+    print("Bounding boxes are visible. Press F4 to toggle visibility.")
 
 # Настраиваем логирование
 logging.basicConfig(level=logging.INFO)
@@ -280,6 +293,9 @@ class OverlayWindow:
         
         # Флаг для отрисовки скелета
         self.draw_skeleton_enabled = False
+        
+        # Флаг для отрисовки рамок объектов
+        self.draw_bounding_boxes = SHOW_BOUNDING_BOXES
         
         # Цвета для индикации состояния
         self.following_color = 0x00FF00  # Зеленый для активного состояния
@@ -529,8 +545,13 @@ class OverlayWindow:
             print(f"Error in draw_movement_vector: {str(e)}")
 
     def draw_bounding_box(self, box, color, class_name=None, distance=None):
+        # Пропускаем отрисовку, если отключена
+        if not self.draw_bounding_boxes:
+            return
+            
         if not box:
             return
+            
         try:
             min_x, min_y, max_x, max_y = box
             
@@ -1122,7 +1143,7 @@ class OverlayWindow:
             
             # Добавляем название программы и версию в центре верхней части экрана
             title_text = "Reign of Bots"
-            version_text = "v0.030"
+            version_text = "v0.031"
             
             # Используем Arial italic для заголовка, красный цвет, увеличиваем размер шрифта
             title_font = self.create_font({
@@ -1173,6 +1194,7 @@ class OverlayWindow:
                 self.draw_attack_status(cursor_controller)
                 self.draw_person_ignore_status(cursor_controller)  # Добавляем индикатор игнорирования Persons
                 self.draw_cursor_control_status(cursor_controller)  # Добавляем индикатор управления мышью
+                self.draw_boxes_status()  # Добавляем индикатор видимости рамок
                 
                 # Добавляем индикатор статуса обучения
                 self.draw_training_status(training_active, fine_tuning_active)
@@ -2674,45 +2696,51 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
             cursor_x, cursor_y = cursor_controller.move_cursor(target_x, target_y)
             perf_monitor.stop('cursor')
             
-            # Рисуем рамки объектов в окне отладки
+            # Рисуем рамки объектов в окне отладки только если включено
             perf_monitor.start('drawing')
             
-            # Рисуем все обнаруженные объекты
-            for obj in detected_objects:
-                box = obj['box']
-                color = obj['color']
-                
-                # Преобразуем цвет из BGR в RGB
-                display_color = (color[2], color[1], color[0])
-                
-                # Рисуем рамку
-                cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 2)
-                
-                # Рисуем информацию о классе и расстоянии
-                class_name = obj['class']
-                distance = obj['distance']
-                text = f"{class_name}: {distance:.2f}m"
-                
-                # Добавляем текст о выбранной цели
-                if obj.get('is_target', False) and not training_active:
-                    text += " [TARGET]"
-                    # Рисуем более толстую рамку для целевого объекта
-                    cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 4)
-                
-                # Размещаем текст над рамкой
-                text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
-                text_x = box[0]
-                text_y = box[1] - 10 if box[1] > 30 else box[1] + 30
-                cv2.rectangle(frame, (text_x, text_y - text_size[1] - 10), 
-                              (text_x + text_size[0] + 10, text_y), display_color, -1)
-                cv2.putText(frame, text, (text_x + 5, text_y - 5), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            # Рисуем все обнаруженные объекты если включено отображение рамок
+            if overlay.draw_bounding_boxes:
+                for obj in detected_objects:
+                    try:
+                        box = obj['box']
+                        color = obj['color']
+                        
+                        # Преобразуем цвет из BGR в RGB
+                        display_color = (color[2], color[1], color[0])
+                        
+                        # Рисуем рамку
+                        cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 2)
+                        
+                        # Рисуем информацию о классе и расстоянии
+                        class_name = obj['class']
+                        distance = obj['distance']
+                        text = f"{class_name}: {distance:.2f}m"
+                        
+                        # Добавляем текст о выбранной цели
+                        if obj.get('is_target', False) and not training_active:
+                            text += " [TARGET]"
+                            # Рисуем более толстую рамку для целевого объекта
+                            cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 4)
+                        
+                        # Размещаем текст над рамкой
+                        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+                        text_x = box[0]
+                        text_y = box[1] - 10 if box[1] > 30 else box[1] + 30
+                        cv2.rectangle(frame, (text_x, text_y - text_size[1] - 10), 
+                                    (text_x + text_size[0] + 10, text_y), display_color, -1)
+                        cv2.putText(frame, text, (text_x + 5, text_y - 5), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    except Exception as e:
+                        # Подавляем частые ошибки отрисовки
+                        if not any(err in str(e) for err in ["invalid handle", "GetDIBits", "index out of range"]):
+                            print(f"Error drawing object: {e}")
             
-            # Рисуем курсор
+            # Всегда рисуем курсор
             cv2.circle(frame, (cursor_x, cursor_y), 5, (0, 0, 255), -1)
             
-            # Рисуем вектор движения
-            if cursor_controller.last_position is not None:
+            # Рисуем вектор движения если включено отображение рамок
+            if overlay.draw_bounding_boxes and cursor_controller.last_position is not None:
                 dx = target_x - cursor_controller.last_position[0]
                 dy = target_y - cursor_controller.last_position[1]
                 movement = (dx**2 + dy**2)**0.5
@@ -2728,31 +2756,37 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                     )
             perf_monitor.stop('drawing')
         else:
-            # В режиме обучения или если нет цели, просто рисуем все объекты
+            # В режиме обучения или если нет цели, рисуем все объекты если включено отображение рамок
             perf_monitor.start('drawing')
-            for obj in detected_objects:
-                box = obj['box']
-                color = obj['color']
-                
-                # Преобразуем цвет из BGR в RGB
-                display_color = (color[2], color[1], color[0])
-                
-                # Рисуем рамку
-                cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 2)
-                
-                # Рисуем информацию о классе и расстоянии
-                class_name = obj['class']
-                distance = obj['distance']
-                text = f"{class_name}: {distance:.2f}m"
-                
-                # Размещаем текст над рамкой
-                text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
-                text_x = box[0]
-                text_y = box[1] - 10 if box[1] > 30 else box[1] + 30
-                cv2.rectangle(frame, (text_x, text_y - text_size[1] - 10), 
-                              (text_x + text_size[0] + 10, text_y), display_color, -1)
-                cv2.putText(frame, text, (text_x + 5, text_y - 5), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            if overlay.draw_bounding_boxes:
+                for obj in detected_objects:
+                    try:
+                        box = obj['box']
+                        color = obj['color']
+                        
+                        # Преобразуем цвет из BGR в RGB
+                        display_color = (color[2], color[1], color[0])
+                        
+                        # Рисуем рамку
+                        cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 2)
+                        
+                        # Рисуем информацию о классе и расстоянии
+                        class_name = obj['class']
+                        distance = obj['distance']
+                        text = f"{class_name}: {distance:.2f}m"
+                        
+                        # Размещаем текст над рамкой
+                        text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+                        text_x = box[0]
+                        text_y = box[1] - 10 if box[1] > 30 else box[1] + 30
+                        cv2.rectangle(frame, (text_x, text_y - text_size[1] - 10), 
+                                    (text_x + text_size[0] + 10, text_y), display_color, -1)
+                        cv2.putText(frame, text, (text_x + 5, text_y - 5), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    except Exception as e:
+                        # Подавляем частые ошибки отрисовки
+                        if not any(err in str(e) for err in ["invalid handle", "GetDIBits", "index out of range"]):
+                            print(f"Error drawing object: {e}")
             perf_monitor.stop('drawing')
             
             # Используем текущую позицию курсора для отображения
@@ -2905,6 +2939,7 @@ def main():
         print("Press '-' to toggle between absolute and relative mouse movement modes")
         print("Press '+' to toggle following mode")
         print("Press 'F5' to toggle cursor control mode")
+        print("Press 'F4' to toggle bounding box visibility")
         print("Press 'Backspace' to toggle attack mode")
         print("Press '\\' to toggle ignoring people (class 0)")
         print("Press 'F1' to exit")
@@ -2941,6 +2976,12 @@ def main():
                         enabled_status = "ENABLED" if cursor_controller.cursor_control_enabled else "DISABLED"
                         print(f"Cursor control {enabled_status}")
                         time.sleep(0.1)
+                elif keyboard.is_pressed('F4'):
+                    # Переключаем видимость рамок
+                    overlay.draw_bounding_boxes = not overlay.draw_bounding_boxes
+                    status = "VISIBLE" if overlay.draw_bounding_boxes else "HIDDEN"
+                    print(f"Bounding boxes are now {status}")
+                    time.sleep(0.1)
                 elif keyboard.is_pressed('backspace'):
                     if cursor_controller.toggle_attack():
                         print("Toggled attack mode")
