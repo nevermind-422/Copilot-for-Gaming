@@ -18,7 +18,7 @@ OVERLAY_CONFIG = {
     'crosshair_color': 0x00FF00,  # Green
     'crosshair_relative_color': 0x0000FF,  # Blue for relative mode
     'update_interval': 1.0 / 60.0,  # 60 FPS
-    'transparency': 128  # 50% transparency
+    'transparency': 100  # 100 - более прозрачный (раньше было 128)
 }
 
 # Cursor settings
