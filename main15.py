@@ -2212,7 +2212,7 @@ def capture_screen():
             capture_screen.last_reinit_time = current_time
             print("MSS screen capture reinitialized")
         
-        # Захватываем изображение с экрана с помощью MSS (намного быстрее Win32API и PyAutoGUI)
+        # Захватываем изображение с экрана с помощью MSS
         img = np.asarray(capture_screen.sct.grab(capture_screen.monitor))
         
         # Сбрасываем счетчик ошибок при успешном выполнении
@@ -2227,49 +2227,6 @@ def capture_screen():
         if "GetDIBits" not in str(e):
             print(f"Error in MSS screen capture: {str(e)} (count: {capture_screen.error_count})")
         
-        # Если MSS не работает после нескольких попыток, используем запасной метод
-        if capture_screen.error_count > 5:
-            print("MSS failing consistently, trying fallback capture method...")
-            return capture_screen_fallback()
-            
-        return None
-
-def capture_screen_fallback():
-    """Запасной метод захвата экрана, использующий Win32 API напрямую"""
-    try:
-        # Получаем размеры экрана
-        screen_width = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
-        screen_height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
-        
-        # Получаем DC рабочего стола
-        hdesktop = win32gui.GetDesktopWindow()
-        desktop_dc = win32gui.GetWindowDC(hdesktop)
-        img_dc = win32ui.CreateDCFromHandle(desktop_dc)
-        mem_dc = img_dc.CreateCompatibleDC()
-        
-        # Создаем битмап для хранения изображения
-        screenshot = win32ui.CreateBitmap()
-        screenshot.CreateCompatibleBitmap(img_dc, screen_width, screen_height)
-        mem_dc.SelectObject(screenshot)
-        
-        # Копируем экран в битмап
-        mem_dc.BitBlt((0, 0), (screen_width, screen_height), img_dc, (0, 0), win32con.SRCCOPY)
-        
-        # Преобразуем битмап в массив numpy
-        signedIntsArray = screenshot.GetBitmapBits(True)
-        img = np.frombuffer(signedIntsArray, dtype='uint8')
-        img.shape = (screen_height, screen_width, 4)
-        
-        # Освобождаем ресурсы
-        mem_dc.DeleteDC()
-        img_dc.DeleteDC()
-        win32gui.ReleaseDC(hdesktop, desktop_dc)
-        win32gui.DeleteObject(screenshot.GetHandle())
-        
-        # Конвертируем из BGRA в BGR для OpenCV
-        return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-    except Exception as e:
-        print(f"Error in fallback screen capture: {str(e)}")
         return None
 
 class YOLOPersonDetector:
