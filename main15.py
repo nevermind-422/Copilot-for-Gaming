@@ -2542,19 +2542,23 @@ class YOLOPersonDetector:
         
         return target_x, target_y, distance, speed, direction
 
-def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
-    try:
-        # Минимизируем логирование для лучшей производительности
-        #print("Starting process_frame...")
+def detect_objects(frame, perf_monitor):
+    """
+    Detect objects in the given frame using YOLO.
+    
+    Args:
+        frame: The input frame to process
+        perf_monitor: Performance monitoring object
         
+    Returns:
+        A tuple of (all_objects, results) where all_objects is a list of detected objects
+        and results is the raw detection results from YOLO
+    """
+    try:
         if frame is None or frame.size == 0:
             print("Error: Invalid frame")
-            # Обязательно вызовем handle_auto_movement с box=None
-            cursor_controller.handle_auto_movement(None, None)
-            return None, None, None, 0.0, 0.0, []
+            return [], None
             
-        perf_monitor.start('process')
-        
         # Получаем размеры экрана
         screen_width = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
         screen_height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
@@ -2563,37 +2567,35 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
         perf_monitor.start('detection')
         
         # Инициализируем детектор при первом вызове
-        if not hasattr(process_frame, "detector"):
-            process_frame.detector = YOLOPersonDetector(model=yolo_model, conf=0.4)
+        if not hasattr(detect_objects, "detector"):
+            detect_objects.detector = YOLOPersonDetector(model=yolo_model, conf=0.4)
         
         # Хранение времени последнего полного анализа
-        if not hasattr(process_frame, "last_full_detection_time"):
-            process_frame.last_full_detection_time = 0
-            process_frame.detection_interval = 0.1  # 10 раз в секунду
-            process_frame.cached_results = None
+        if not hasattr(detect_objects, "last_full_detection_time"):
+            detect_objects.last_full_detection_time = 0
+            detect_objects.detection_interval = 0.1  # 10 раз в секунду
+            detect_objects.cached_results = None
         
         current_time = time.time()
         
         # Уменьшаем частоту инференса для снижения нагрузки
         # Делаем полный анализ только раз в 100 мс (10 Гц), а в остальное время используем кеш
-        if current_time - process_frame.last_full_detection_time >= process_frame.detection_interval:
+        if current_time - detect_objects.last_full_detection_time >= detect_objects.detection_interval:
             # Запускаем детекцию всех объектов, а не только людей
-            results = process_frame.detector.detect_all_objects(frame)
-            process_frame.cached_results = results
-            process_frame.last_full_detection_time = current_time
+            results = detect_objects.detector.detect_all_objects(frame)
+            detect_objects.cached_results = results
+            detect_objects.last_full_detection_time = current_time
         else:
             # Используем кешированные результаты
-            results = process_frame.cached_results
+            results = detect_objects.cached_results
         
         # Получаем все объекты
-        all_objects = process_frame.detector.get_all_objects(results)
+        all_objects = detect_objects.detector.get_all_objects(results)
         
         perf_monitor.stop('detection')
         
         # Список для хранения всех найденных объектов
         detected_objects = []
-        target_x, target_y, target_distance, speed, direction = None, None, None, 0.0, 0.0
-        target_box = None
         
         # Если найдены объекты, обработаем их
         if all_objects:
@@ -2607,7 +2609,7 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                     obj_class = obj['class_name']
                     
                     # Вычисляем 3D позицию объекта
-                    obj_x, obj_y, obj_distance, obj_speed, obj_direction = process_frame.detector.calculate_3d_position(
+                    obj_x, obj_y, obj_distance, obj_speed, obj_direction = detect_objects.detector.calculate_3d_position(
                         obj_box, 
                         screen_width, 
                         screen_height
@@ -2635,89 +2637,178 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                         'color': color,
                         'box': obj_box,
                         'distance': obj_distance,
-                        'position': (obj_x, obj_y)
+                        'position': (obj_x, obj_y),
+                        'speed': obj_speed,
+                        'direction': obj_direction
                     })
                 except Exception as e:
                     # Подавляем распространенные ошибки обработки объектов
                     if not any(err in str(e) for err in ["invalid handle", "GetDIBits", "index out of range"]):
                         print(f"Error processing object: {e}")
-            
-            # Определяем целевой объект в зависимости от режима
-            if cursor_controller.following_enabled and not training_active:
-                # Режим следования за ближайшим объектом
-                # Фильтруем объекты, исключая те, которые находятся в списке игнорируемых
-                valid_objects = [obj for obj in detected_objects 
-                               if obj['class'].lower() not in [cls.lower() for cls in cursor_controller.ignored_classes]]
-                
-                if valid_objects:
-                    # Выбираем ближайший из допустимых объектов
-                    nearest_object = min(valid_objects, key=lambda obj: obj['distance'])
-                    target_box = nearest_object['box']
-                    target_x, target_y = nearest_object['position']
-                    target_distance = nearest_object['distance']
-                    target_class = nearest_object['class']
-                    
-                    # Отмечаем ближайший объект как целевой
-                    for obj in detected_objects:
-                        if obj['box'] == target_box:
-                            obj['is_target'] = True
-                        else:
-                            obj['is_target'] = False
-                else:
-                    # Нет допустимых объектов
-                    target_box = None
-                    target_x, target_y, target_distance = None, None, None
-            elif not training_active:
-                # Фильтруем объекты, исключая те, которые находятся в списке игнорируемых
-                valid_objects = [obj for obj in detected_objects 
-                               if obj['class'].lower() not in [cls.lower() for cls in cursor_controller.ignored_classes]]
-                
-                if not valid_objects:
-                    # Нет допустимых объектов
-                    target_box = None
-                    target_x, target_y, target_distance = None, None, None
-                else:
-                    # Если следование отключено, смотрим на самый большой объект (человека, если есть)
-                    people = [obj for obj in valid_objects if obj['class'].lower() == 'person']
-                    if people:
-                        # Находим самого большого человека по площади бокса
-                        largest_person = max(people, key=lambda obj: 
-                            (obj['box'][2] - obj['box'][0]) * (obj['box'][3] - obj['box'][1]))
-                        
-                        target_box = largest_person['box']
-                        target_x, target_y = largest_person['position']
-                        target_distance = largest_person['distance']
-                        target_class = largest_person['class']
-                        
-                        # Отмечаем самого большого человека как целевой
-                        for obj in detected_objects:
-                            if obj['box'] == target_box:
-                                obj['is_target'] = True
-                            else:
-                                obj['is_target'] = False
-                    elif valid_objects:
-                        # Если людей нет, берем самый большой допустимый объект
-                        largest_object = max(valid_objects, key=lambda obj: 
-                            (obj['box'][2] - obj['box'][0]) * (obj['box'][3] - obj['box'][1]))
-                        
-                        target_box = largest_object['box']
-                        target_x, target_y = largest_object['position']
-                        target_distance = largest_object['distance']
-                        target_class = largest_object['class']
-                        
-                        # Отмечаем самый большой объект как целевой
-                        for obj in detected_objects:
-                            if obj['box'] == target_box:
-                                obj['is_target'] = True
-                            else:
-                                obj['is_target'] = False
-        else:
-            # Нет объектов
-            cursor_controller.last_box = None
-            target_box = None
         
-        # Важно: всегда вызываем handle_auto_movement, передавая текущее расстояние и box (или None)
-        cursor_controller.handle_auto_movement(target_distance, target_box)
+        return detected_objects, results
+        
+    except Exception as e:
+        print(f"Error in detect_objects: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return [], None
+
+def select_target(detected_objects, cursor_controller):
+    """
+    Select the target object from the list of detected objects.
+    
+    Args:
+        detected_objects: List of detected objects
+        cursor_controller: The cursor controller object with targeting settings
+        
+    Returns:
+        A tuple of (target_box, target_x, target_y, target_distance, target_speed, target_direction)
+        or (None, None, None, None, 0.0, 0.0) if no target is found
+    """
+    try:
+        if not detected_objects or training_active:
+            return None, None, None, None, 0.0, 0.0
+        
+        target_box = None
+        target_x = None
+        target_y = None
+        target_distance = None
+        target_speed = 0.0
+        target_direction = 0.0
+        
+        # Фильтруем объекты, исключая те, которые находятся в списке игнорируемых
+        valid_objects = [obj for obj in detected_objects 
+                       if obj['class'].lower() not in [cls.lower() for cls in cursor_controller.ignored_classes]]
+        
+        if not valid_objects:
+            return None, None, None, None, 0.0, 0.0
+        
+        # Определяем целевой объект в зависимости от режима
+        if cursor_controller.following_enabled:
+            # Режим следования за ближайшим объектом
+            nearest_object = min(valid_objects, key=lambda obj: obj['distance'])
+            target_box = nearest_object['box']
+            target_x, target_y = nearest_object['position']
+            target_distance = nearest_object['distance']
+            target_speed = nearest_object.get('speed', 0.0)
+            target_direction = nearest_object.get('direction', 0.0)
+            
+            # Отмечаем ближайший объект как целевой
+            for obj in detected_objects:
+                obj['is_target'] = (obj['box'] == target_box)
+        else:
+            # Если следование отключено, смотрим на самый большой объект (человека, если есть)
+            people = [obj for obj in valid_objects if obj['class'].lower() == 'person']
+            if people:
+                # Находим самого большого человека по площади бокса
+                largest_person = max(people, key=lambda obj: 
+                    (obj['box'][2] - obj['box'][0]) * (obj['box'][3] - obj['box'][1]))
+                
+                target_box = largest_person['box']
+                target_x, target_y = largest_person['position']
+                target_distance = largest_person['distance']
+                target_speed = largest_person.get('speed', 0.0)
+                target_direction = largest_person.get('direction', 0.0)
+                
+                # Отмечаем самого большого человека как целевой
+                for obj in detected_objects:
+                    obj['is_target'] = (obj['box'] == target_box)
+            elif valid_objects:
+                # Если людей нет, берем самый большой допустимый объект
+                largest_object = max(valid_objects, key=lambda obj: 
+                    (obj['box'][2] - obj['box'][0]) * (obj['box'][3] - obj['box'][1]))
+                
+                target_box = largest_object['box']
+                target_x, target_y = largest_object['position']
+                target_distance = largest_object['distance']
+                target_speed = largest_object.get('speed', 0.0)
+                target_direction = largest_object.get('direction', 0.0)
+                
+                # Отмечаем самый большой объект как целевой
+                for obj in detected_objects:
+                    obj['is_target'] = (obj['box'] == target_box)
+        
+        return target_box, target_x, target_y, target_distance, target_speed, target_direction
+        
+    except Exception as e:
+        print(f"Error in select_target: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None, None, None, None, 0.0, 0.0
+
+def draw_objects(frame, detected_objects, target_x, target_y, cursor_controller, perf_monitor):
+    """
+    Draw detected objects and cursor on the frame.
+    
+    Args:
+        frame: The frame to draw on
+        detected_objects: List of detected objects
+        target_x, target_y: Coordinates of the target (if any)
+        cursor_controller: The cursor controller object
+        perf_monitor: Performance monitoring object
+        
+    Returns:
+        The modified frame with drawings
+    """
+    try:
+        perf_monitor.start('drawing')
+        
+        # Рисуем рамки объектов в окне отладки
+        for obj in detected_objects:
+            try:
+                box = obj['box']
+                color = obj['color']
+                
+                # Преобразуем цвет из BGR в RGB
+                display_color = (color[2], color[1], color[0])
+                
+                # Рисуем рамку
+                cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 2)
+                
+                # Рисуем информацию о классе и расстоянии
+                class_name = obj['class']
+                distance = obj['distance']
+                text = f"{class_name}: {distance:.2f}m"
+                
+                # Добавляем текст о выбранной цели
+                if obj.get('is_target', False) and not training_active:
+                    text += " [TARGET]"
+                    # Рисуем более толстую рамку для целевого объекта
+                    cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 4)
+                
+                # Размещаем текст над рамкой
+                text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+                text_x = box[0]
+                text_y = box[1] - 10 if box[1] > 30 else box[1] + 30
+                cv2.rectangle(frame, (text_x, text_y - text_size[1] - 10), 
+                              (text_x + text_size[0] + 10, text_y), display_color, -1)
+                cv2.putText(frame, text, (text_x + 5, text_y - 5), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            except Exception as e:
+                # Подавляем частые ошибки отрисовки
+                if not any(err in str(e) for err in ["invalid handle", "GetDIBits", "index out of range"]):
+                    print(f"Error drawing object: {e}")
+        
+        # Рисуем вектор движения всегда, независимо от настроек оверлея
+        if target_x is not None and target_y is not None and cursor_controller.last_position is not None:
+            dx = target_x - cursor_controller.last_position[0]
+            dy = target_y - cursor_controller.last_position[1]
+            movement = (dx**2 + dy**2)**0.5
+            
+            if movement > 10:
+                cv2.arrowedLine(
+                    frame,
+                    cursor_controller.last_position,
+                    (target_x, target_y),
+                    (0, 255, 0),
+                    2,
+                    tipLength=0.2
+                )
+        
+        # Всегда рисуем курсор для отладочного отображения
+        if target_x is not None and target_y is not None:
+            cv2.circle(frame, (target_x, target_y), 5, (0, 0, 255), -1)
         
         # В режиме обучения добавляем информацию в кадр
         if training_active:
@@ -2725,122 +2816,62 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
             status_text = f"TRAINING MODE: Collecting bag data, {trainer.frames_to_save} frames remaining"
             cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         
-        # Отрисовка результатов и перемещение курсора
+        perf_monitor.stop('drawing')
+        return frame
+        
+    except Exception as e:
+        print(f"Error in draw_objects: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        perf_monitor.stop('drawing')
+        return frame
+
+def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
+    """
+    Process a video frame to detect objects, select targets, and update the cursor.
+    
+    Args:
+        frame: The input frame to process
+        cursor_controller: The cursor controller object
+        overlay: The overlay window object
+        fps: Current frames per second
+        perf_monitor: Performance monitoring object
+        
+    Returns:
+        A tuple of (target_x, target_y, target_distance, speed, direction, detected_objects)
+    """
+    try:
+        # Минимизируем логирование для лучшей производительности
+        #print("Starting process_frame...")
+        
+        if frame is None or frame.size == 0:
+            print("Error: Invalid frame")
+            # Обязательно вызовем handle_auto_movement с box=None
+            cursor_controller.handle_auto_movement(None, None)
+            return None, None, None, 0.0, 0.0, []
+            
+        perf_monitor.start('process')
+        
+        # 1. Обнаружение объектов
+        detected_objects, results = detect_objects(frame, perf_monitor)
+        
+        # 2. Выбор целевого объекта
+        target_box, target_x, target_y, target_distance, speed, direction = select_target(detected_objects, cursor_controller)
+        
+        # 3. Обработка движения курсора
+        cursor_controller.handle_auto_movement(target_distance, target_box)
+        
+        # 4. Перемещение курсора если есть цель
         if target_box and target_x is not None and target_y is not None and not training_active:
             perf_monitor.start('cursor')
             cursor_x, cursor_y = cursor_controller.move_cursor(target_x, target_y)
             perf_monitor.stop('cursor')
-            
-            # Рисуем рамки объектов в окне отладки
-            perf_monitor.start('drawing')
-            
-            # Всегда рисуем рамки в отладочном окне независимо от настроек оверлея
-            for obj in detected_objects:
-                try:
-                    box = obj['box']
-                    color = obj['color']
-                    
-                    # Преобразуем цвет из BGR в RGB
-                    display_color = (color[2], color[1], color[0])
-                    
-                    # Рисуем рамку
-                    cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 2)
-                    
-                    # Рисуем информацию о классе и расстоянии
-                    class_name = obj['class']
-                    distance = obj['distance']
-                    text = f"{class_name}: {distance:.2f}m"
-                    
-                    # Добавляем текст о выбранной цели
-                    if obj.get('is_target', False) and not training_active:
-                        text += " [TARGET]"
-                        # Рисуем более толстую рамку для целевого объекта
-                        cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 4)
-                    
-                    # Размещаем текст над рамкой
-                    text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
-                    text_x = box[0]
-                    text_y = box[1] - 10 if box[1] > 30 else box[1] + 30
-                    cv2.rectangle(frame, (text_x, text_y - text_size[1] - 10), 
-                                  (text_x + text_size[0] + 10, text_y), display_color, -1)
-                    cv2.putText(frame, text, (text_x + 5, text_y - 5), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                except Exception as e:
-                    # Подавляем частые ошибки отрисовки
-                    if not any(err in str(e) for err in ["invalid handle", "GetDIBits", "index out of range"]):
-                        print(f"Error drawing object: {e}")
-            
-            # Рисуем вектор движения всегда, независимо от настроек оверлея
-            if cursor_controller.last_position is not None:
-                dx = target_x - cursor_controller.last_position[0]
-                dy = target_y - cursor_controller.last_position[1]
-                movement = (dx**2 + dy**2)**0.5
-                
-                if movement > 10:
-                    cv2.arrowedLine(
-                        frame,
-                        cursor_controller.last_position,
-                        (target_x, target_y),
-                        (0, 255, 0),
-                        2,
-                        tipLength=0.2
-                    )
-            
-            # Всегда рисуем курсор для отладочного отображения
-            cv2.circle(frame, (cursor_x, cursor_y), 5, (0, 0, 255), -1)
-            
-            perf_monitor.stop('drawing')
         else:
-            # В режиме обучения или если нет цели, рисуем все объекты только если включено отображение рамок
-            perf_monitor.start('drawing')
-            
-            # Всегда рисуем все объекты в отладочном окне независимо от настроек оверлея
-            for obj in detected_objects:
-                try:
-                    box = obj['box']
-                    color = obj['color']
-                    
-                    # Преобразуем цвет из BGR в RGB
-                    display_color = (color[2], color[1], color[0])
-                    
-                    # Рисуем рамку
-                    cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), display_color, 2)
-                    
-                    # Рисуем информацию о классе и расстоянии
-                    class_name = obj['class']
-                    distance = obj['distance']
-                    text = f"{class_name}: {distance:.2f}m"
-                    
-                    # Размещаем текст над рамкой
-                    text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
-                    text_x = box[0]
-                    text_y = box[1] - 10 if box[1] > 30 else box[1] + 30
-                    cv2.rectangle(frame, (text_x, text_y - text_size[1] - 10), 
-                                (text_x + text_size[0] + 10, text_y), display_color, -1)
-                    cv2.putText(frame, text, (text_x + 5, text_y - 5), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                except Exception as e:
-                    # Подавляем частые ошибки отрисовки
-                    if not any(err in str(e) for err in ["invalid handle", "GetDIBits", "index out of range"]):
-                        print(f"Error drawing object: {e}")
-            
-            # Всегда рисуем курсор для отладочного отображения
-            if target_x is not None and target_y is not None:
-                cv2.circle(frame, (target_x, target_y), 5, (0, 0, 255), -1)
-            
-            perf_monitor.stop('drawing')
-            
             # Используем текущую позицию курсора для отображения
             cursor_pos = win32api.GetCursorPos()
         
-        # Убираем вывод в отдельное окно отладки
-        """
-        try:
-            cv2.imshow('Debug View', frame)
-            cv2.waitKey(1)
-        except Exception as e:
-            print(f"Error showing debug window: {str(e)}")
-        """
+        # 5. Отрисовка объектов на кадре
+        draw_objects(frame, detected_objects, target_x, target_y, cursor_controller, perf_monitor)
         
         perf_monitor.stop('process')
         return target_x, target_y, target_distance, speed, direction, detected_objects
