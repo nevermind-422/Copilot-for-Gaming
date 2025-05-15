@@ -8,7 +8,7 @@ import win32ui
 import time
 from collections import deque
 from ctypes import windll, c_int, c_uint, c_char_p, c_void_p, c_float, c_bool, POINTER, Structure, c_long, byref
-import math
+import math 
 import pyautogui
 import keyboard
 import os
@@ -23,6 +23,12 @@ from ultralytics import YOLO
 from utils.training import YOLOTrainer
 import mss  # Добавляем быструю библиотеку для захвата экрана
 
+# Версия 0.030
+# - Улучшена стабильность работы MSS для захвата экрана
+# - Подавлен вывод распространенных ошибок GetDIBits для более чистого лога
+# - Оптимизированы сообщения об ошибках создания GDI объектов
+# - Улучшена очистка GDI ресурсов для предотвращения утечек
+# - Добавлена фильтрация ошибок для повышения читаемости вывода консоли
 # Версия 0.029
 # - Добавлена поддержка GPU (CUDA) для ускорения инференса нейросети
 # - Оптимизирован захват экрана для снижения нагрузки на систему
@@ -300,14 +306,41 @@ class OverlayWindow:
             key = (style, width, color)
             if key in self.pen_cache:
                 return self.pen_cache[key]
+            
+            # Проверяем количество активных GDI объектов
+            active_gdi = self.created_gdi_count - self.deleted_gdi_count
+            if active_gdi > 1000:  # Слишком много объектов
+                # Принудительно очищаем все
+                print(f"Too many GDI objects ({active_gdi}), forcing cleanup")
+                self.clean_gdi_objects(force=True)
                 
-            pen = win32ui.CreatePen(style, width, color)
-            self.created_gdi_count += 1
-            self.gdi_objects.append(('pen', pen))
-            self.pen_cache[key] = pen
-            return pen
+            # Ограничиваем количество попыток создания объекта
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    pen = win32ui.CreatePen(style, width, color)
+                    self.created_gdi_count += 1
+                    self.gdi_objects.append(('pen', pen))
+                    self.pen_cache[key] = pen
+                    return pen
+                except Exception as pen_error:
+                    if attempt < max_retries - 1:
+                        # Подавляем вывод распространенных ошибок создания пера
+                        if "CreatePenIndirect" not in str(pen_error):
+                            print(f"Retry creating pen: attempt {attempt+1}/{max_retries}")
+                        # Пробуем почистить ресурсы перед повторной попыткой
+                        self.clean_gdi_objects(force=True)
+                        time.sleep(0.01)  # Небольшая пауза
+                    else:
+                        # Последняя попытка не удалась
+                        # Подавляем вывод распространенных ошибок
+                        if "CreatePenIndirect" not in str(pen_error):
+                            print(f"Error creating pen after {max_retries} attempts: {pen_error}")
+                        return None
         except Exception as e:
-            print(f"Error creating pen: {e}")
+            # Подавляем вывод распространенных ошибок
+            if "CreatePenIndirect" not in str(e):
+                print(f"Error creating pen: {e}")
             return None
 
     def create_brush(self, style, color, hatch=0):
@@ -318,13 +351,40 @@ class OverlayWindow:
             if key in self.brush_cache:
                 return self.brush_cache[key]
                 
-            brush = win32ui.CreateBrush(style, color, hatch)
-            self.created_gdi_count += 1
-            self.gdi_objects.append(('brush', brush))
-            self.brush_cache[key] = brush
-            return brush
+            # Проверяем количество активных GDI объектов
+            active_gdi = self.created_gdi_count - self.deleted_gdi_count
+            if active_gdi > 1000:  # Слишком много объектов
+                # Принудительно очищаем все
+                print(f"Too many GDI objects ({active_gdi}), forcing cleanup")
+                self.clean_gdi_objects(force=True)
+            
+            # Ограничиваем количество попыток создания объекта
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    brush = win32ui.CreateBrush(style, color, hatch)
+                    self.created_gdi_count += 1
+                    self.gdi_objects.append(('brush', brush))
+                    self.brush_cache[key] = brush
+                    return brush
+                except Exception as brush_error:
+                    if attempt < max_retries - 1:
+                        # Подавляем вывод распространенных ошибок создания кисти
+                        if "CreateBrush" not in str(brush_error):
+                            print(f"Retry creating brush: attempt {attempt+1}/{max_retries}")
+                        # Пробуем почистить ресурсы перед повторной попыткой
+                        self.clean_gdi_objects(force=True)
+                        time.sleep(0.01)  # Небольшая пауза
+                    else:
+                        # Последняя попытка не удалась
+                        # Подавляем вывод распространенных ошибок
+                        if "CreateBrush" not in str(brush_error):
+                            print(f"Error creating brush after {max_retries} attempts: {brush_error}")
+                        return None
         except Exception as e:
-            print(f"Error creating brush: {e}")
+            # Подавляем вывод распространенных ошибок
+            if "CreateBrush" not in str(e):
+                print(f"Error creating brush: {e}")
             return None
 
     def create_font(self, params):
@@ -334,14 +394,41 @@ class OverlayWindow:
             key = tuple(sorted(params.items()))
             if key in self.font_cache:
                 return self.font_cache[key]
+            
+            # Проверяем количество активных GDI объектов
+            active_gdi = self.created_gdi_count - self.deleted_gdi_count
+            if active_gdi > 1000:  # Слишком много объектов
+                # Принудительно очищаем все
+                print(f"Too many GDI objects ({active_gdi}), forcing cleanup")
+                self.clean_gdi_objects(force=True)
                 
-            font = win32ui.CreateFont(params)
-            self.created_gdi_count += 1
-            self.gdi_objects.append(('font', font))
-            self.font_cache[key] = font
-            return font
+            # Ограничиваем количество попыток создания объекта
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    font = win32ui.CreateFont(params)
+                    self.created_gdi_count += 1
+                    self.gdi_objects.append(('font', font))
+                    self.font_cache[key] = font
+                    return font
+                except Exception as font_error:
+                    if attempt < max_retries - 1:
+                        # Подавляем вывод распространенных ошибок создания шрифта
+                        if "CreateFont" not in str(font_error):
+                            print(f"Retry creating font: attempt {attempt+1}/{max_retries}")
+                        # Пробуем почистить ресурсы перед повторной попыткой
+                        self.clean_gdi_objects(force=True)
+                        time.sleep(0.01)  # Небольшая пауза
+                    else:
+                        # Последняя попытка не удалась
+                        # Подавляем вывод распространенных ошибок
+                        if "CreateFont" not in str(font_error):
+                            print(f"Error creating font after {max_retries} attempts: {font_error}")
+                        return None
         except Exception as e:
-            print(f"Error creating font: {e}")
+            # Подавляем вывод распространенных ошибок
+            if "CreateFont" not in str(e):
+                print(f"Error creating font: {e}")
             return None
 
     def clean_gdi_objects(self, force=False):
@@ -366,7 +453,9 @@ class OverlayWindow:
                         obj.delete()
                     self.deleted_gdi_count += 1
                 except Exception as e:
-                    print(f"Error cleaning up GDI object ({obj_type}): {str(e)}")
+                    # Подавляем распространенные ошибки очистки GDI объектов
+                    if not any(err in str(e) for err in ["invalid handle", "already deleted", "cannot delete"]):
+                        print(f"Error cleaning up GDI object ({obj_type}): {str(e)}")
             
             # Очищаем список
             self.gdi_objects.clear()
@@ -375,7 +464,9 @@ class OverlayWindow:
             if force:
                 print(f"GDI objects: created={self.created_gdi_count}, deleted={self.deleted_gdi_count}, diff={self.created_gdi_count-self.deleted_gdi_count}")
         except Exception as e:
-            print(f"Error in clean_gdi_objects: {str(e)}")
+            # Подавляем общие ошибки очистки GDI объектов
+            if not any(err in str(e) for err in ["invalid handle", "already deleted", "cannot delete"]):
+                print(f"Error in clean_gdi_objects: {str(e)}")
 
     def draw_skeleton(self, landmarks, color):
         """Не используется в YOLO, оставлено для совместимости"""
@@ -461,9 +552,6 @@ class OverlayWindow:
                 print(f"Invalid color format: {color}")
                 color = (255, 255, 255)  # Белый цвет по умолчанию
                 
-            # Убедимся, что цвет - это кортеж из трех целых чисел от 0 до 255
-            color = tuple(max(0, min(255, int(c))) for c in color)
-            
             # Только перо, без кисти (заливки)
             color_value = color[2] << 16 | color[1] << 8 | color[0]
             pen = self.create_pen(win32con.PS_SOLID, 2, color_value)
@@ -508,7 +596,9 @@ class OverlayWindow:
             self.save_dc.SelectObject(old_pen)
                     
         except Exception as e:
-            print(f"Error in draw_bounding_box: {e}")
+            # Подавляем частые ошибки рисования
+            if not any(err in str(e) for err in ["invalid handle", "GetDIBits", "CreatePen", "CreateBrush", "CreateFont"]):
+                print(f"Error in draw_bounding_box: {e}")
             import traceback
             traceback.print_exc()
 
@@ -830,6 +920,70 @@ class OverlayWindow:
         except Exception as e:
             print(f"Error drawing person ignore status: {str(e)}")
 
+    def draw_cursor_control_status(self, cursor_controller):
+        """Рисует индикатор режима управления мышью в виде кнопки"""
+        try:
+            # Создаем список для отслеживания GDI объектов
+            gdi_objects = []
+            
+            # Позиция и размеры кнопки - та же ширина, что и у других кнопок
+            button_width = 120
+            button_height = 40
+            button_x = 460  # Смещаем левее с 600 до 460
+            button_y = 290  # Располагаем под кнопкой игнорирования людей
+            
+            # Цвета
+            bg_color = 0x00FF00 if cursor_controller.cursor_control_enabled else 0xFF0000  # Зеленый для активного, красный для неактивного
+            text_color = 0xFFFFFF  # Белый текст
+            
+            # Рисуем фон кнопки
+            brush = win32ui.CreateBrush(win32con.BS_SOLID, bg_color, 0)
+            gdi_objects.append(('brush', brush))
+            self.save_dc.SelectObject(brush)
+            self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
+            
+            # Рисуем рамку кнопки
+            pen = win32ui.CreatePen(win32con.PS_SOLID, 2, 0xFFFFFF)  # Белая рамка
+            gdi_objects.append(('pen', pen))
+            self.save_dc.SelectObject(pen)
+            self.save_dc.Rectangle((button_x, button_y, button_x + button_width, button_y + button_height))
+            
+            # Рисуем текст
+            self.save_dc.SetTextColor(text_color)
+            status = "MOUSE: ON" if cursor_controller.cursor_control_enabled else "MOUSE: OFF"
+            
+            # Центрируем текст
+            text_width = self.save_dc.GetTextExtent(status)[0]
+            text_x = button_x + (button_width - text_width) // 2
+            text_y = button_y + (button_height - 20) // 2
+            
+            self.save_dc.TextOut(text_x, text_y, status)
+            
+            # Добавляем подсказку с хоткеем справа от кнопки
+            hotkey_text = ": F5"
+            self.save_dc.SetTextColor(0x00FF00)  # Зеленый цвет для подсказки
+            hotkey_x = button_x + button_width + 10
+            self.save_dc.TextOut(hotkey_x, button_y + (button_height - 20) // 2, hotkey_text)
+            
+            # Очищаем ресурсы
+            for obj_type, obj in gdi_objects:
+                try:
+                    if obj_type == 'brush':
+                        if hasattr(obj, 'DeleteObject'):
+                            obj.DeleteObject()
+                        elif hasattr(obj, 'delete'):
+                            obj.delete()
+                    elif obj_type == 'pen':
+                        if hasattr(obj, 'DeleteObject'):
+                            obj.DeleteObject()
+                        elif hasattr(obj, 'delete'):
+                            obj.delete()
+                except Exception as e:
+                    print(f"Error cleaning up GDI object ({obj_type}): {str(e)}")
+            
+        except Exception as e:
+            print(f"Error drawing cursor control status: {str(e)}")
+
     def draw_ignored_classes(self, cursor_controller):
         try:
             # Создаем список для отслеживания GDI объектов
@@ -968,7 +1122,7 @@ class OverlayWindow:
             
             # Добавляем название программы и версию в центре верхней части экрана
             title_text = "Reign of Bots"
-            version_text = "v0.029"
+            version_text = "v0.030"
             
             # Используем Arial italic для заголовка, красный цвет, увеличиваем размер шрифта
             title_font = self.create_font({
@@ -1018,6 +1172,7 @@ class OverlayWindow:
                 self.draw_mode_status(cursor_controller)
                 self.draw_attack_status(cursor_controller)
                 self.draw_person_ignore_status(cursor_controller)  # Добавляем индикатор игнорирования Persons
+                self.draw_cursor_control_status(cursor_controller)  # Добавляем индикатор управления мышью
                 
                 # Добавляем индикатор статуса обучения
                 self.draw_training_status(training_active, fine_tuning_active)
@@ -1028,7 +1183,7 @@ class OverlayWindow:
                     info_width = 300
                     info_height = 120
                     info_x = 460  # Смещаем левее с 600 до 460
-                    info_y = 290  # Располагаем под кнопкой игнорирования Person (было 240)
+                    info_y = 350  # Располагаем под кнопкой управления мышью
                     
                     # Цвета для блока
                     bg_color = 0x404040  # Серый фон
@@ -1205,13 +1360,17 @@ class OverlayWindow:
                     win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE
                 )
             except Exception as e:
-                print(f"Error in UpdateLayeredWindow: {str(e)}")
+                # Подавляем распространенные ошибки обновления окна
+                if not any(err in str(e) for err in ["invalid handle", "GetDIBits", "UpdateLayeredWindow"]):
+                    print(f"Error in UpdateLayeredWindow: {str(e)}")
             
             # Очищаем временные GDI объекты после каждого обновления
             self.clean_gdi_objects()
             
         except Exception as e:
-            print(f"Error in update_info: {str(e)}")
+            # Подавляем распространенные ошибки обновления информации
+            if not any(err in str(e) for err in ["invalid handle", "GetDIBits", "CreatePen", "CreateBrush", "CreateFont"]):
+                print(f"Error in update_info: {str(e)}")
             # В случае ошибки принудительно очищаем все объекты
             self.clean_gdi_objects(force=True)
 
@@ -1309,7 +1468,8 @@ class CursorController:
         self.update_thread.start()
         
         # Параметры состояния
-        self.following_enabled = True
+        self.following_enabled = False  # По умолчанию режим следования выключен
+        self.cursor_control_enabled = False  # По умолчанию управление мышью выключено
         self.attack_enabled = False
         self.last_attack_time = 0
         self.attack_interval = random.uniform(0.1, 0.3)  # Случайный интервал между кликами
@@ -1399,6 +1559,11 @@ class CursorController:
     def toggle_mode(self):
         """Переключает режим управления мышью (абсолютный/относительный)"""
         self.relative_mode = not self.relative_mode
+        return True
+        
+    def toggle_cursor_control(self):
+        """Переключает режим управления курсором мыши (включено/выключено)"""
+        self.cursor_control_enabled = not self.cursor_control_enabled
         return True
         
     def toggle_attack(self):
@@ -1540,8 +1705,13 @@ class CursorController:
                 except Exception as e:
                     print(f"Error releasing W key: {e}")
         
-        # Устанавливаем целевую позицию курсора
-        self.move_cursor(target_x, target_y)
+        # Устанавливаем целевую позицию курсора только если включено управление курсором
+        if self.cursor_control_enabled:
+            self.move_cursor(target_x, target_y)
+        else:
+            # В режиме без управления только обновляем целевую позицию
+            self.target_x = target_x
+            self.target_y = target_y
     
     def _update_loop(self):
         """Основной цикл обновления позиции мыши с частотой 500 Hz"""
@@ -1570,7 +1740,7 @@ class CursorController:
             return
             
         # Если управление курсором отключено, просто выходим
-        if DISABLE_CURSOR_CONTROL:
+        if not self.cursor_control_enabled:
             return
         
         # Получаем разницу между целью и центром экрана
@@ -1629,7 +1799,7 @@ class CursorController:
     def _update_absolute_mode(self):
         """Обновление в абсолютном режиме с оптимизированными вычислениями"""
         # Если управление курсором отключено, просто выходим
-        if DISABLE_CURSOR_CONTROL:
+        if not self.cursor_control_enabled:
             return
             
         current_x, current_y = win32api.GetCursorPos()
@@ -1679,14 +1849,34 @@ class CursorController:
         win32api.SetCursorPos((new_x, new_y))
     
     def move_cursor(self, target_x, target_y):
-        """Установка целевой позиции курсора"""
-        try:
-            # Всегда обновляем целевую позицию без каких-либо коррекций
+        """Move cursor to target position"""
+        # Если управление курсором отключено, только обновляем целевую позицию без перемещения
+        if not self.cursor_control_enabled:
             self.target_x = target_x
             self.target_y = target_y
             return win32api.GetCursorPos()
-        except Exception as e:
-            print(f"Error in move_cursor: {str(e)}")
+            
+        # Применяем абсолютный или относительный режим
+        if self.relative_mode:
+            # В относительном режиме только устанавливаем цель
+            self.target_x = target_x
+            self.target_y = target_y
+            return win32api.GetCursorPos()
+        else:
+            # Абсолютный режим - перемещаем курсор напрямую
+            current_pos = win32api.GetCursorPos()
+            dx = target_x - current_pos[0]
+            dy = target_y - current_pos[1]
+            
+            # Применяем сглаживание к dx и dy
+            dx *= self.sensitivity
+            dy *= self.sensitivity
+            
+            # Перемещаем курсор, если разница достаточно большая
+            if abs(dx) > 0.5 or abs(dy) > 0.5:
+                win32api.mouse_event(win32con.MOUSEEVENTF_MOVE, int(dx), int(dy), 0, 0)
+            
+            # Возвращаем обновленную позицию
             return win32api.GetCursorPos()
     
     def cleanup(self):
@@ -1943,15 +2133,86 @@ def capture_screen():
         capture_screen.sct = mss.mss()
         capture_screen.monitor = capture_screen.sct.monitors[0]  # Полный экран
         print("MSS screen capture initialized")
+        # Добавляем счетчик ошибок
+        capture_screen.error_count = 0
+        # Добавляем время последней реинициализации
+        capture_screen.last_reinit_time = time.time()
     
     try:
+        # Проверяем, не слишком ли много ошибок или не пора ли реинициализировать
+        current_time = time.time()
+        if (capture_screen.error_count > 10 or 
+            current_time - capture_screen.last_reinit_time > 60.0):  # Реинициализация каждые 60 сек
+            print(f"Reinitializing MSS after {capture_screen.error_count} errors or time interval")
+            # Высвобождаем ресурсы и пересоздаем MSS
+            try:
+                del capture_screen.sct
+            except:
+                pass
+            capture_screen.sct = mss.mss()
+            capture_screen.monitor = capture_screen.sct.monitors[0]
+            capture_screen.error_count = 0
+            capture_screen.last_reinit_time = current_time
+            print("MSS screen capture reinitialized")
+        
         # Захватываем изображение с экрана с помощью MSS (намного быстрее Win32API и PyAutoGUI)
         img = np.asarray(capture_screen.sct.grab(capture_screen.monitor))
+        
+        # Сбрасываем счетчик ошибок при успешном выполнении
+        capture_screen.error_count = 0
         
         # Конвертируем из BGR в RGB для OpenCV
         return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
     except Exception as e:
-        print(f"Error in MSS screen capture: {str(e)}")
+        # Увеличиваем счетчик ошибок
+        capture_screen.error_count += 1
+        # Подавляем вывод стандартных ошибок GetDIBits
+        if "GetDIBits" not in str(e):
+            print(f"Error in MSS screen capture: {str(e)} (count: {capture_screen.error_count})")
+        
+        # Если MSS не работает после нескольких попыток, используем запасной метод
+        if capture_screen.error_count > 5:
+            print("MSS failing consistently, trying fallback capture method...")
+            return capture_screen_fallback()
+            
+        return None
+
+def capture_screen_fallback():
+    """Запасной метод захвата экрана, использующий Win32 API напрямую"""
+    try:
+        # Получаем размеры экрана
+        screen_width = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
+        screen_height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
+        
+        # Получаем DC рабочего стола
+        hdesktop = win32gui.GetDesktopWindow()
+        desktop_dc = win32gui.GetWindowDC(hdesktop)
+        img_dc = win32ui.CreateDCFromHandle(desktop_dc)
+        mem_dc = img_dc.CreateCompatibleDC()
+        
+        # Создаем битмап для хранения изображения
+        screenshot = win32ui.CreateBitmap()
+        screenshot.CreateCompatibleBitmap(img_dc, screen_width, screen_height)
+        mem_dc.SelectObject(screenshot)
+        
+        # Копируем экран в битмап
+        mem_dc.BitBlt((0, 0), (screen_width, screen_height), img_dc, (0, 0), win32con.SRCCOPY)
+        
+        # Преобразуем битмап в массив numpy
+        signedIntsArray = screenshot.GetBitmapBits(True)
+        img = np.frombuffer(signedIntsArray, dtype='uint8')
+        img.shape = (screen_height, screen_width, 4)
+        
+        # Освобождаем ресурсы
+        mem_dc.DeleteDC()
+        img_dc.DeleteDC()
+        win32gui.ReleaseDC(hdesktop, desktop_dc)
+        win32gui.DeleteObject(screenshot.GetHandle())
+        
+        # Конвертируем из BGRA в BGR для OpenCV
+        return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+    except Exception as e:
+        print(f"Error in fallback screen capture: {str(e)}")
         return None
 
 class YOLOPersonDetector:
@@ -2320,9 +2581,9 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
                         'position': (obj_x, obj_y)
                     })
                 except Exception as e:
-                    print(f"Error processing object: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    # Подавляем распространенные ошибки обработки объектов
+                    if not any(err in str(e) for err in ["invalid handle", "GetDIBits", "index out of range"]):
+                        print(f"Error processing object: {e}")
             
             # Определяем целевой объект в зависимости от режима
             if cursor_controller.following_enabled and not training_active:
@@ -2643,6 +2904,7 @@ def main():
         print("Starting main loop...")
         print("Press '-' to toggle between absolute and relative mouse movement modes")
         print("Press '+' to toggle following mode")
+        print("Press 'F5' to toggle cursor control mode")
         print("Press 'Backspace' to toggle attack mode")
         print("Press '\\' to toggle ignoring people (class 0)")
         print("Press 'F1' to exit")
@@ -2673,6 +2935,11 @@ def main():
                 elif keyboard.is_pressed('+'):
                     if cursor_controller.toggle_following():
                         print("Toggled following mode")
+                        time.sleep(0.1)
+                elif keyboard.is_pressed('F5'):
+                    if cursor_controller.toggle_cursor_control():
+                        enabled_status = "ENABLED" if cursor_controller.cursor_control_enabled else "DISABLED"
+                        print(f"Cursor control {enabled_status}")
                         time.sleep(0.1)
                 elif keyboard.is_pressed('backspace'):
                     if cursor_controller.toggle_attack():
@@ -2832,6 +3099,14 @@ def main():
                 cursor_controller.cleanup()
         except Exception as e:
             print(f"Error cleaning cursor controller: {str(e)}")
+            
+        # Очищаем ресурсы MSS
+        try:
+            if hasattr(capture_screen, "sct"):
+                print("Cleaning MSS screen capture resources...")
+                del capture_screen.sct
+        except Exception as e:
+            print(f"Error cleaning MSS resources: {str(e)}")
             
         print("Cleanup complete, exiting...")
         cv2.destroyAllWindows()
