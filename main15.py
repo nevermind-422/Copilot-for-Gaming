@@ -6,6 +6,7 @@ import win32con
 import win32gui
 import win32ui
 import time
+import contextlib
 from collections import deque
 from ctypes import windll, c_int, c_uint, c_char_p, c_void_p, c_float, c_bool, POINTER, Structure, c_long, byref
 import math 
@@ -2201,10 +2202,10 @@ def capture_screen():
             current_time - capture_screen.last_reinit_time > 60.0):  # Реинициализация каждые 60 сек
             print(f"Reinitializing MSS after {capture_screen.error_count} errors or time interval")
             # Высвобождаем ресурсы и пересоздаем MSS
-            try:
+            with contextlib.suppress(Exception):
+                capture_screen.sct.close()  # Правильно закрываем ресурсы перед удалением
                 del capture_screen.sct
-            except:
-                pass
+            
             capture_screen.sct = mss.mss()
             capture_screen.monitor = capture_screen.sct.monitors[0]
             capture_screen.error_count = 0
@@ -3183,12 +3184,11 @@ def main():
             print(f"Error cleaning cursor controller: {str(e)}")
             
         # Очищаем ресурсы MSS
-        try:
-            if hasattr(capture_screen, "sct"):
-                print("Cleaning MSS screen capture resources...")
+        if hasattr(capture_screen, "sct"):
+            print("Cleaning MSS screen capture resources...")
+            with contextlib.suppress(Exception):
+                capture_screen.sct.close()  # Правильно закрываем ресурсы перед удалением
                 del capture_screen.sct
-        except Exception as e:
-            print(f"Error cleaning MSS resources: {str(e)}")
             
         print("Cleanup complete, exiting...")
         cv2.destroyAllWindows()
