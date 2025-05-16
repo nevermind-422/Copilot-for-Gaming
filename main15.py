@@ -25,10 +25,11 @@ from utils.training import YOLOTrainer
 from utils.kalman import KalmanFilter, BoxFilter  # Импортируем фильтр Калмана из модуля
 from utils.detector import YOLOPersonDetector, detect_objects, select_target, COCO_CLASSES, DEFAULT_IGNORED_CLASSES  # Импортируем детектор из модуля
 from utils.cursor_control import CursorController  # Импортируем CursorController из нового модуля
-import mss  # Библиотека для быстрого захвата экрана
+from utils.performance import PerformanceCounter, PerformanceMonitor  # Импортируем модули для отслеживания производительности
+from utils.capture import capture_screen  # Импортируем функцию захвата экрана из модуля
 
 # Полная история версий находится в README.md
-# Reign of Bots - Версия 0.037
+# Reign of Bots - Версия 0.038
 
 # Константы для классов COCO и игнорируемых объектов импортированы из модуля detector.py
 
@@ -114,63 +115,6 @@ except Exception as e:
 # Константы для эмуляции мыши
 MOUSEEVENTF_MOVE = 0x0001
 user32 = windll.user32
-
-class PerformanceCounter:
-    def __init__(self, name):
-        self.name = name
-        self.total_time = 0.0
-        self.count = 0
-        self.last_time = 0.0
-        self.current_time = 0.0
-        self.avg_time = 0.0
-        self.last_reset_time = time.time()
-        
-    def start(self):
-        self.last_time = time.time()
-        
-    def stop(self):
-        try:
-            self.current_time = time.time() - self.last_time
-            self.total_time += self.current_time
-            self.count += 1
-            
-            # Обновляем среднее каждую секунду
-            current_time = time.time()
-            if current_time - self.last_reset_time >= 1.0:
-                if self.count > 0:
-                    self.avg_time = self.total_time / self.count
-                self.total_time = 0.0
-                self.count = 0
-                self.last_reset_time = current_time
-        except Exception as e:
-            print(f"Error in PerformanceCounter.stop for {self.name}: {str(e)}")
-
-class PerformanceMonitor:
-    def __init__(self):
-        self.counters = {
-            'capture': PerformanceCounter('Screen Capture'),
-            'process': PerformanceCounter('Frame Processing'),
-            'detection': PerformanceCounter('Object Detection'),
-            'drawing': PerformanceCounter('Drawing'),
-            'overlay': PerformanceCounter('Overlay Update'),
-            'cursor': PerformanceCounter('Cursor Control')
-        }
-        self.last_reset = time.time()
-        self.reset_interval = 1.0
-        
-    def start(self, counter_name):
-        if counter_name in self.counters:
-            self.counters[counter_name].start()
-        
-    def stop(self, counter_name):
-        if counter_name in self.counters:
-            self.counters[counter_name].stop()
-        
-    def get_stats(self):
-        current_time = time.time()
-        if current_time - self.last_reset >= self.reset_interval:
-            self.last_reset = current_time
-        return {name: counter for name, counter in self.counters.items()}
 
 class OverlayWindow:
     """
@@ -1589,62 +1533,6 @@ class DrawingUtils:    # Удален словарь BODY_PARTS, так как �
                 2
             )
 
-def capture_screen():
-    """
-    Захватывает изображение экрана с высокой производительностью используя MSS
-    
-    Returns:
-        np.ndarray: Изображение экрана в формате BGR для OpenCV или None в случае ошибки
-    """
-    # Статические переменные для повторного использования ресурсов MSS
-    if not hasattr(capture_screen, "sct"):
-        # Инициализируем MSS при первом вызове
-        capture_screen.sct = mss.mss()
-        capture_screen.monitor = capture_screen.sct.monitors[0]  # Полный экран
-        print("MSS screen capture initialized")
-        # Добавляем счетчик ошибок
-        capture_screen.error_count = 0
-        # Добавляем время последней реинициализации
-        capture_screen.last_reinit_time = time.time()
-    
-    try:
-        # Проверяем, не слишком ли много ошибок или не пора ли реинициализировать
-        current_time = time.time()
-        if (capture_screen.error_count > 10 or 
-            current_time - capture_screen.last_reinit_time > 60.0):  # Реинициализация каждые 60 сек
-            print(f"Reinitializing MSS after {capture_screen.error_count} errors or time interval")
-            # Высвобождаем ресурсы и пересоздаем MSS
-            with contextlib.suppress(Exception):
-                capture_screen.sct.close()  # Правильно закрываем ресурсы перед удалением
-                del capture_screen.sct
-            
-            capture_screen.sct = mss.mss()
-            capture_screen.monitor = capture_screen.sct.monitors[0]
-            capture_screen.error_count = 0
-            capture_screen.last_reinit_time = current_time
-            print("MSS screen capture reinitialized")
-        
-        # Захватываем изображение с экрана с помощью MSS
-        img = np.asarray(capture_screen.sct.grab(capture_screen.monitor))
-        
-        # Сбрасываем счетчик ошибок при успешном выполнении
-        capture_screen.error_count = 0
-        
-        # Конвертируем из BGR в RGB для OpenCV
-        return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-    except Exception as e:
-        # Увеличиваем счетчик ошибок
-        capture_screen.error_count += 1
-        # Подавляем вывод стандартных ошибок GetDIBits
-        if "GetDIBits" not in str(e):
-            print(f"Error in MSS screen capture: {str(e)} (count: {capture_screen.error_count})")
-        
-        return None
-
-# Класс YOLOPersonDetector перенесен в модуль utils/detector.py
-
-# Функции detect_objects и select_target перенесены в модуль utils/detector.py
-
 def draw_objects(frame, detected_objects, target_x, target_y, cursor_controller, perf_monitor):
     """
     Draw detected objects and cursor on the frame.
@@ -1975,12 +1863,12 @@ def main():
                     if cursor_controller.toggle_following():
                         print("Toggled following mode")
                         time.sleep(0.1)
-                elif keyboard.is_pressed('F5'):
+                elif keyboard.is_pressed('F5') or keyboard.is_pressed('f5'):
                     if cursor_controller.toggle_cursor_control():
                         enabled_status = "ENABLED" if cursor_controller.cursor_control_enabled else "DISABLED"
                         print(f"Cursor control {enabled_status}")
                         time.sleep(0.1)
-                elif keyboard.is_pressed('F4'):
+                elif keyboard.is_pressed('F4') or keyboard.is_pressed('f4'):
                     # Переключаем видимость рамок
                     overlay.draw_bounding_boxes = not overlay.draw_bounding_boxes
                     status = "VISIBLE" if overlay.draw_bounding_boxes else "HIDDEN"
@@ -2014,7 +1902,7 @@ def main():
                 # Обработка кадра с ограничением частоты до 60 Hz
                 if current_time - last_process_time >= process_interval:
                     perf_monitor.start('capture')
-                    frame = capture_screen()
+                    frame = capture_screen()  # Используем импортированную функцию захвата экрана
                     perf_monitor.stop('capture')
                     
                     if frame is not None:
@@ -2141,11 +2029,9 @@ def main():
             print(f"Error cleaning cursor controller: {str(e)}")
             
         # Очищаем ресурсы MSS с использованием contextlib.suppress для корректной обработки исключений
-        if hasattr(capture_screen, "sct"):
+        if hasattr(capture_screen, "screen_capturer"):
             print("Cleaning MSS screen capture resources...")
-            with contextlib.suppress(Exception):
-                capture_screen.sct.close()  # Правильно закрываем ресурсы перед удалением
-                del capture_screen.sct
+            capture_screen.screen_capturer.cleanup()
             
         print("Cleanup complete, exiting...")
         cv2.destroyAllWindows()

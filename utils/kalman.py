@@ -56,7 +56,7 @@ class KalmanFilter:
 class BoxFilter:
     """
     Фильтр для сглаживания координат ограничивающей рамки.
-    Применяет фильтр Калмана только к координатам рамки.
+    Применяет отдельные фильтры Калмана для x и y координат рамки.
     """
     
     def __init__(self, process_variance=0.00001, measurement_variance=0.3):
@@ -67,13 +67,14 @@ class BoxFilter:
             process_variance (float): Дисперсия процесса для фильтра Калмана
             measurement_variance (float): Дисперсия измерения для фильтра Калмана
         """
-        # Создаем единственный фильтр для координат рамки
-        self.kalman_box = KalmanFilter(process_variance, measurement_variance)
+        # Создаем отдельные фильтры для координат x и y
+        self.kalman_x = KalmanFilter(process_variance, measurement_variance)
+        self.kalman_y = KalmanFilter(process_variance, measurement_variance)
         self.last_box = None
     
     def update(self, box):
         """
-        Применяет фильтр к координатам рамки.
+        Применяет фильтры к координатам рамки.
         
         Args:
             box (tuple): Координаты рамки (x_min, y_min, x_max, y_max)
@@ -90,12 +91,9 @@ class BoxFilter:
         width = x_max - x_min
         height = y_max - y_min
         
-        # Применяем фильтр Калмана к ОДНОЙ координате - x_min
-        # Остальные координаты будут рассчитаны относительно неё
-        filtered_x_min = self.kalman_box.update(x_min)
-        
-        # Применяем фильтр Калмана к ОДНОЙ координате - y_min
-        filtered_y_min = self.kalman_box.update(y_min)
+        # Применяем отдельные фильтры Калмана к координатам x и y
+        filtered_x_min = self.kalman_x.update(x_min)
+        filtered_y_min = self.kalman_y.update(y_min)
         
         # Вычисляем остальные координаты на основе отфильтрованных x_min, y_min
         # и оригинальной ширины и высоты
@@ -106,6 +104,14 @@ class BoxFilter:
         self.last_box = (filtered_x_min, filtered_y_min, filtered_x_max, filtered_y_max)
         
         return self.last_box
+    
+    def reset(self):
+        """
+        Сбрасывает состояние обоих фильтров Калмана.
+        """
+        self.kalman_x.reset()
+        self.kalman_y.reset()
+        self.last_box = None
         
     def get_center(self):
         """

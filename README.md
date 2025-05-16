@@ -23,8 +23,18 @@ The project has been refactored to follow a modular architecture:
   - `cursor_control.py` - Cursor controller with multiple modes
   - `training.py` - Tools for collecting data and fine-tuning the model
   - `drawing.py` - Drawing utilities for visualization
+  - `performance.py` - Performance monitoring and timing utilities
+  - `capture.py` - Screen capture functionality for efficient frame grabbing
 
 ## Version History
+
+### Version 0.038
+- Enhanced modularity with additional utility modules
+- Extracted performance monitoring tools to `utils/performance.py`
+- Moved screen capture functionality to `utils/capture.py`
+- Improved code organization for better maintainability
+- Reduced the size and complexity of main file
+- Added better resource management for screen capture
 
 ### Version 0.037
 - Improved modularity: `CursorController` moved to a separate module
