@@ -36,7 +36,7 @@ class CursorController:
         self.target_x = self.current_x
         self.target_y = self.current_y
         self.relative_mode = False
-        self.smoothing_factor = 0.3
+        self.smoothing_factor = 0.1  # Коэффициент экспоненциального сглаживания движений курсора - чем меньше, тем плавнее движения
         self.sensitivity = 1.0
         self.min_distance = 0.5  # Уменьшаем минимальное расстояние для большей точности
         self.max_speed = 100
@@ -106,8 +106,7 @@ class CursorController:
         self.RELATIVE_MAX_VELOCITY = 50  # Максимальная скорость движения
         self.RELATIVE_ACCELERATION = 0.5  # Ускорение/замедление
         
-        # Параметры для экспоненциального сглаживания
-        self.smoothing_factor = 0.1  # Чем меньше, тем сильнее сглаживание
+        # Переменные для экспоненциального сглаживания координат объекта
         self.smoothed_min_x = None
         self.smoothed_min_y = None
         self.smoothed_max_x = None
