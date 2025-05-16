@@ -79,6 +79,17 @@ The project has been refactored to follow a modular architecture:
 - Fixed UpdateLayeredWindow method for correct transparent overlay
 - Added periodic forced overlay updates for stable operation
 - Replaced YOLOv8 with YOLO11 for improved object detection
+- Replaced MediaPipe recognition system with YOLO for better detection range
+- Optimized performance with frame scaling
+- Improved handling of multiple people in frame by selecting the largest
+- Added recognition for all object types (not just people)
+- Configured nearest object targeting
+- Added static list of ignored objects
+- Added display of object type and distance information
+- Improved UI element positioning
+- Added "Reign of Bots" title and version in header
+- Fixed GDI resource leaks and improved transparent window
+- Optimized UI rendering performance
 
 ## Requirements
 
