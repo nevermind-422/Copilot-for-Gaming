@@ -26,6 +26,11 @@ from utils.kalman import KalmanFilter, BoxFilter  # Импортируем фи�
 from utils.detector import YOLOPersonDetector, detect_objects, select_target, COCO_CLASSES, DEFAULT_IGNORED_CLASSES  # Импортируем детектор из модуля
 import mss  # Библиотека для быстрого захвата экрана
 
+# Версия 0.036
+# - Оптимизировано управление курсором для предотвращения дублирования перемещений
+# - Добавлен флаг cursor_moved_this_frame для отслеживания перемещений в текущем кадре
+# - Устранен дрожащий эффект курсора из-за двойного вызова move_cursor
+# - Снижена нагрузка на CPU при обработке каждого кадра
 # Версия 0.035
 # - Исправлена ошибка с переменными target_x и target_y в методе handle_auto_movement
 # - Улучшено управление областью видимости переменных для корректной работы с BoxFilter
@@ -1500,6 +1505,9 @@ class CursorController:
         self.max_speed = 100
         self.move_history = deque(maxlen=5)
         
+        # Флаг для отслеживания перемещения курсора в текущем кадре
+        self.cursor_moved_this_frame = False
+        
         # Параметры высокочастотного обновления
         self.update_interval = 1/500  # 500 Hz
         self.running = True
@@ -1721,6 +1729,8 @@ class CursorController:
         # Устанавливаем целевую позицию курсора только если включено управление курсором
         if self.cursor_control_enabled:
             self.move_cursor(self.target_x, self.target_y)
+            # Отмечаем, что курсор уже был перемещен в этом кадре
+            self.cursor_moved_this_frame = True
     
     def _update_loop(self):
         """Основной цикл обновления позиции мыши с частотой 500 Hz"""
@@ -1859,6 +1869,12 @@ class CursorController:
     
     def move_cursor(self, target_x, target_y):
         """Move cursor to target position"""
+        # Если курсор уже перемещен в этом кадре, просто обновляем целевые координаты
+        if self.cursor_moved_this_frame:
+            self.target_x = target_x
+            self.target_y = target_y
+            return win32api.GetCursorPos()
+        
         # Если управление курсором отключено, только обновляем целевую позицию без перемещения
         if not self.cursor_control_enabled:
             self.target_x = target_x
@@ -2241,6 +2257,9 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
         # Минимизируем логирование для лучшей производительности
         #print("Starting process_frame...")
         
+        # Сбрасываем флаг перемещения курсора в начале обработки кадра
+        cursor_controller.cursor_moved_this_frame = False
+        
         if frame is None or frame.size == 0:
             print("Error: Invalid frame")
             # Обязательно вызовем handle_auto_movement с box=None
@@ -2270,8 +2289,8 @@ def process_frame(frame, cursor_controller, overlay, fps, perf_monitor):
         # 3. Обработка движения курсора
         cursor_controller.handle_auto_movement(target_distance, target_box)
         
-        # 4. Перемещение курсора если есть цель
-        if target_box and target_x is not None and target_y is not None and not training_active:
+        # 4. Перемещение курсора если есть цель и еще не было перемещения в этом кадре
+        if target_box and target_x is not None and target_y is not None and not training_active and not cursor_controller.cursor_moved_this_frame:
             perf_monitor.start('cursor')
             cursor_x, cursor_y = cursor_controller.move_cursor(target_x, target_y)
             perf_monitor.stop('cursor')
