@@ -22,8 +22,13 @@ from threading import Thread
 import torch  # Добавляем импорт PyTorch для проверки CUDA
 from ultralytics import YOLO
 from utils.training import YOLOTrainer
+from utils.kalman import KalmanFilter, BoxFilter  # Импортируем фильтр Калмана из модуля
 import mss  # Библиотека для быстрого захвата экрана
 
+# Версия 0.033
+# - Выделение фильтра Калмана в отдельный модуль
+# - Оптимизация применения фильтра Калмана для более эффективного сглаживания 
+# - Улучшение расчета центра объекта без избыточной фильтрации
 # Версия 0.032
 # - Оптимизация захвата экрана: удален запасной метод на основе Win32API, оставлен только MSS
 # - Добавлена правильная очистка ресурсов при закрытии приложения с помощью contextlib.suppress
@@ -1499,31 +1504,7 @@ class OverlayWindow:
             print(f"Error in OverlayWindow cleanup: {str(e)}")
             pass  # Игнорируем ошибки при очистке
 
-class KalmanFilter:
-    """Реализация простого фильтра Калмана для сглаживания координат"""
-    def __init__(self, process_variance=0.0001, measurement_variance=0.1):  # Уменьшаем process_variance для более сильного сглаживания
-        self.process_variance = process_variance  # малое значение = сильное сглаживание
-        self.measurement_variance = measurement_variance
-        self.kalman_gain = 0
-        self.estimated_value = None
-        self.estimate_error = 1.0
-        
-    def update(self, measurement):
-        # Инициализация при первом измерении
-        if self.estimated_value is None:
-            self.estimated_value = measurement
-            return self.estimated_value
-            
-        # Предсказание
-        predicted_value = self.estimated_value
-        prediction_error = self.estimate_error + self.process_variance
-        
-        # Обновление
-        self.kalman_gain = prediction_error / (prediction_error + self.measurement_variance)
-        self.estimated_value = predicted_value + self.kalman_gain * (measurement - predicted_value)
-        self.estimate_error = (1 - self.kalman_gain) * prediction_error
-        
-        return self.estimated_value
+# Класс KalmanFilter вынесен в модуль utils/kalman.py
 
 class CursorController:
     def __init__(self):
@@ -1562,34 +1543,21 @@ class CursorController:
         # Список игнорируемых типов объектов (не будут выбираться в качестве цели)
         self.ignored_classes = DEFAULT_IGNORED_CLASSES.copy()
         
-        # Фильтры Калмана для координат рамки с более сильным сглаживанием
-        self.kalman_x_min = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)  # Уменьшаем process_variance для более сильного сглаживания
-        self.kalman_y_min = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)
-        self.kalman_x_max = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)
-        self.kalman_y_max = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)
+        # Используем единый BoxFilter вместо множества фильтров Калмана для координат
+        self.box_filter = BoxFilter(process_variance=0.00001, measurement_variance=0.3)
         self.filtered_box = None
         
-        # Добавляем фильтры для размеров рамки
-        self.kalman_width = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)
-        self.kalman_height = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)
-        
-        # Добавляем фильтры для центра рамки
-        self.kalman_center_x = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)
-        self.kalman_center_y = KalmanFilter(process_variance=0.00001, measurement_variance=0.3)
-        
-        # Добавляем историю размеров для дополнительного сглаживания
-        self.width_history = deque(maxlen=5)
-        self.height_history = deque(maxlen=5)
-        
-        # Параметры движения вперед
-        self.w_key_pressed = False
-        self.manual_key_pressed = False  # Флаг для отслеживания ручного нажатия клавиши W
-        self.distance_filter = KalmanFilter(process_variance=0.003, measurement_variance=0.05)  # Увеличиваем process_variance и уменьшаем measurement_variance для более быстрой реакции
+        # Фильтр для расстояния
+        self.distance_filter = KalmanFilter(process_variance=0.003, measurement_variance=0.05)
         self.last_distance_check_time = 0
         self.distance_check_interval = 0.05  # Уменьшаем интервал проверки до 50 мс для более быстрой реакции
         self.distance_threshold_press = 1.9  # Порог в метрах для нажатия W
         self.distance_threshold_release = 1.8  # Порог в метрах для отпускания W
         self.target_lost_timeout = 0.3  # Уменьшаем время до признания цели потерянной
+        
+        # Параметры движения вперед
+        self.w_key_pressed = False
+        self.manual_key_pressed = False  # Флаг для отслеживания ручного нажатия клавиши W
         
         # Добавляем атрибут для отслеживания последнего расстояния
         self.last_distance = 0.0
@@ -1713,36 +1681,26 @@ class CursorController:
         if distance is None or distance <= 0:
             return
         
-        # Применяем экспоненциальное сглаживание к координатам рамки
-        min_x, min_y, max_x, max_y = box
-        
-        if self.smoothed_min_x is None:
-            self.smoothed_min_x = min_x
-            self.smoothed_min_y = min_y
-            self.smoothed_max_x = max_x
-            self.smoothed_max_y = max_y
-        else:
-            self.smoothed_min_x = (1 - self.smoothing_factor) * self.smoothed_min_x + self.smoothing_factor * min_x
-            self.smoothed_min_y = (1 - self.smoothing_factor) * self.smoothed_min_y + self.smoothing_factor * min_y
-            self.smoothed_max_x = (1 - self.smoothing_factor) * self.smoothed_max_x + self.smoothing_factor * max_x
-            self.smoothed_max_y = (1 - self.smoothing_factor) * self.smoothed_max_y + self.smoothing_factor * max_y
-        
-        # Обновляем box с использованием сглаженных значений
-        box = (self.smoothed_min_x, self.smoothed_min_y, self.smoothed_max_x, self.smoothed_max_y)
-        
-        # Применяем фильтр Калмана к координатам рамки
-        filtered_min_x = self.kalman_x_min.update(min_x)
-        filtered_min_y = self.kalman_y_min.update(min_y)
-        filtered_max_x = self.kalman_x_max.update(max_x)
-        filtered_max_y = self.kalman_y_max.update(max_y)
+        # Применяем BoxFilter к координатам рамки
+        # Фильтруем только самые необходимые координаты (x_min, y_min)
+        # Остальные вычисляются из исходной ширины и высоты
+        filtered_box = self.box_filter.update(box)
         
         # Сохраняем отфильтрованные данные
-        self.filtered_box = (filtered_min_x, filtered_min_y, filtered_max_x, filtered_max_y)
+        self.filtered_box = filtered_box
         self.last_box = self.filtered_box
         
-        # Вычисляем центр цели
-        target_x = int((filtered_min_x + filtered_max_x) / 2)
-        target_y = int((filtered_min_y + filtered_max_y) / 2)
+        # Вычисляем центр цели после фильтрации
+        center = self.box_filter.get_center()
+        
+        # Создаем локальные переменные для центра цели
+        if center:
+            tgt_x, tgt_y = center
+        else:
+            # Если фильтр не вернул центр, вычисляем из исходной рамки
+            min_x, min_y, max_x, max_y = box
+            tgt_x = int((min_x + max_x) / 2)
+            tgt_y = int((min_y + max_y) / 2)
         
         # Применяем фильтр к расстоянию
         filtered_distance = self.distance_filter.update(distance)
@@ -1783,11 +1741,11 @@ class CursorController:
         
         # Устанавливаем целевую позицию курсора только если включено управление курсором
         if self.cursor_control_enabled:
-            self.move_cursor(target_x, target_y)
+            self.move_cursor(tgt_x, tgt_y)
         else:
             # В режиме без управления только обновляем целевую позицию
-            self.target_x = target_x
-            self.target_y = target_y
+            self.target_x = tgt_x
+            self.target_y = tgt_y
     
     def _update_loop(self):
         """Основной цикл обновления позиции мыши с частотой 500 Hz"""
